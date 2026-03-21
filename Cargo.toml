@@ -7,3 +7,4 @@ description = "A TUI calculator built with Ratatui"
 [dependencies]
 ratatui = "0.30"
 crossterm = { version = "0.29", features = ["event-stream"] }
+arboard = "3"

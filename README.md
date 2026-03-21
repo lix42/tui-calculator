@@ -9,6 +9,7 @@ A terminal-based calculator built with Rust and [Ratatui](https://ratatui.rs).
 - HJKL / arrow keys to navigate buttons
 - Mouse click support
 - Button grid UI similar to macOS Calculator
+- **Copy result to clipboard**: after evaluating an expression, a "Copy" button appears (focused by default). Press `Space`/`Enter` or click it to copy the result to the system clipboard. The button disappears when new input begins.
 
 ## Usage
 
@@ -30,3 +31,13 @@ cargo run
 | `Space`/`Enter` | Press focused button|
 | Mouse click     | Press button        |
 | `q` or `Esc`    | Quit                |
+
+### After Evaluation
+
+When a result is displayed, a **Copy** button appears and receives focus automatically.
+
+| Key             | Action                        |
+|-----------------|-------------------------------|
+| `Space`/`Enter` | Copy result to clipboard      |
+| Any digit/op    | Dismiss Copy, start new input |
+| `c`             | Clear result and Copy button  |

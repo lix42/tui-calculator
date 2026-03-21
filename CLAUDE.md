@@ -23,4 +23,6 @@ Currently a single `src/main.rs` stub. The README describes the target design:
 - **UI**: Ratatui-based TUI with a button grid layout
 - **Evaluation**: parse and evaluate arithmetic expressions with operator precedence
 
-Key dependencies: `ratatui` for terminal UI rendering, `crossterm` (with `event-stream` feature) for terminal input handling.
+Key dependencies: `ratatui` for terminal UI rendering, `crossterm` (with `event-stream` feature) for terminal input handling, `arboard` for system clipboard access.
+
+- **Copy to clipboard**: after evaluation, a "Copy" button appears (auto-focused). Space/Enter/click copies result to system clipboard. Button dismissed on new input.
