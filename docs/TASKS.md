@@ -1,6 +1,6 @@
 # Tasks
 
-[ ] eval-parser: Expression parser and evaluator
+[x] eval-parser: Expression parser and evaluator
 [ ] app-state: Application state and core logic
 [ ] tui-skeleton: Terminal setup and event loop
 [ ] ui-display: Render display box
