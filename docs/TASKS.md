@@ -1,7 +1,7 @@
 # Tasks
 
 [x] eval-parser: Expression parser and evaluator
-[ ] app-state: Application state and core logic
+[x] app-state: Application state and core logic
 [ ] app-result-state: Refactor result field to a proper enum
 [ ] app-display-split: Separate display string from internal expression
 [ ] app-ui-state: Extract UI state from App into its own struct/file
