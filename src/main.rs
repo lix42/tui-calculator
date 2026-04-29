@@ -1,12 +1,21 @@
+mod app;
 mod eval;
 
+use app::App;
 use eval::eval;
 
 fn main() {
-    // Placeholder: the TUI event loop will replace this.
-    // Wired up now so the eval module is reachable and clippy stays clean.
-    match eval("1+1") {
-        Ok(v) => println!("eval: {v}"),
-        Err(e) => eprintln!("error: {e}"),
+    let mut app = App::new();
+    let _ = app.should_quit;
+    app.move_focus(1, 1);
+    let _ = app.focused_label();
+    for ch in "1+1=".chars() {
+        app.press_button(&ch.to_string());
+    }
+
+    app.evaluate();
+    match app.result {
+        Some(ref res) => println!("Result: {res}"),
+        None => println!("No result"),
     }
 }

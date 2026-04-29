@@ -2,6 +2,9 @@
 
 [x] eval-parser: Expression parser and evaluator
 [ ] app-state: Application state and core logic
+[ ] app-result-state: Refactor result field to a proper enum
+[ ] app-display-split: Separate display string from internal expression
+[ ] app-ui-state: Extract UI state from App into its own struct/file
 [ ] tui-skeleton: Terminal setup and event loop
 [ ] ui-display: Render display box
 [ ] ui-buttons: Render button grid with focus
