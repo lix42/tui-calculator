@@ -19,8 +19,37 @@ Key implementation details:
 - `format_number`: integers as `"8"` (not `"8.0"`), decimals trimmed to 10
   places with trailing zeros stripped
 
-`src/main.rs` has a temporary placeholder that exercises `App`; it will be
-replaced entirely by `tui-skeleton`.
+### tui-skeleton — `src/main.rs`, `src/ui.rs`
+Terminal lifecycle, main event loop, and a stub renderer. No unit tests
+(manual verification: launch, quit via `q`/`Esc`/`Ctrl+C`, terminal restored).
+
+Key implementation details:
+- `setup_terminal`: `enable_raw_mode` → `EnterAlternateScreen` →
+  `EnableMouseCapture`. `restore_terminal` reverses in the right order
+  (mouse capture off *before* leaving alt screen).
+- `install_panic_hook` chains a custom hook in front of the original so the
+  terminal is restored on panic before the default panic message prints.
+- Main loop polls `event::poll(100ms)` and dispatches to `handle_event`.
+  `app.should_quit` is the exit signal.
+- `handle_event` filters `KeyEventKind::Press` (Windows fires Press / Repeat /
+  Release for every keystroke; without the filter every tap counts multiple
+  times). Quit keys: `q`, `Esc`, `Ctrl+C`. Mouse / resize / paste events fall
+  through to a no-op.
+- `Ctrl+C` is handled explicitly — in raw mode the kernel does *not* turn it
+  into `SIGINT`; the app receives the keypress and must act on it.
+- `ui::draw` is a stub (`Block::bordered().title("Calculator")`); real layout
+  comes in `ui-display` and `ui-buttons`.
+
+`Tui` is deliberately concrete: `Terminal<CrosstermBackend<Stdout>>`. The
+`Backend` trait already abstracts rendering inside `ui::draw`, so making
+`main.rs` generic over `B: Backend` would only abstract the part that's
+already abstract — setup, teardown, and event reading are inherently
+crossterm-specific. If a non-terminal backend is ever needed, the right
+factoring is a separate binary, not generics here.
+
+Build currently emits 11 "never used" warnings for `App` methods and the
+`eval` module: nothing in `handle_event` yet calls `press_button`,
+`evaluate`, etc. These clear as soon as `key-input` lands.
 
 ## Known Issues / Deferred
 
@@ -45,5 +74,5 @@ Three follow-up tasks were added to `docs/TASKS.md` during implementation:
 
 ## Next Task
 
-**tui-skeleton** — `docs/tasks/tui-skeleton.md`
-Terminal setup and event loop using Ratatui + Crossterm.
+**ui-display** — `docs/tasks/ui-display.md`
+Render the display box (top of the screen, showing expression and/or result).
