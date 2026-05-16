@@ -13,7 +13,8 @@ all passing.
 Key implementation details:
 - `BUTTONS: [[&str; 4]; 5]` — 5×4 grid, default focus at `(4,3)` (`"="`)
 - `press_button(&str)` dispatches to `clear / backspace / evaluate / append`
-- `append` maps display chars to expression chars (`"÷"→"/"`, `"×"→"*"`)
+- `append` maps display chars to expression chars via `display_to_expr`
+  (`"÷"→"/"`, `"×"→"*"`); the inverse `expr_to_display` is used by the UI
 - Post-eval state tracked via `result.is_some()`: digit → fresh expression,
   operator → continue from result value
 - `format_number`: integers as `"8"` (not `"8.0"`), decimals trimmed to 10
@@ -37,8 +38,7 @@ Key implementation details:
   through to a no-op.
 - `Ctrl+C` is handled explicitly — in raw mode the kernel does *not* turn it
   into `SIGINT`; the app receives the keypress and must act on it.
-- `ui::draw` is a stub (`Block::bordered().title("Calculator")`); real layout
-  comes in `ui-display` and `ui-buttons`.
+- `ui::draw` was a stub; real layout implemented in `ui-display`.
 
 `Tui` is deliberately concrete: `Terminal<CrosstermBackend<Stdout>>`. The
 `Backend` trait already abstracts rendering inside `ui::draw`, so making
@@ -50,6 +50,24 @@ factoring is a separate binary, not generics here.
 Build currently emits 11 "never used" warnings for `App` methods and the
 `eval` module: nothing in `handle_event` yet calls `press_button`,
 `evaluate`, etc. These clear as soon as `key-input` lands.
+
+### ui-display — `src/ui.rs`, `src/app.rs`
+Renders the calculator display box. No unit tests (manual verification: launch,
+type an expression, press `=`, observe two-line display).
+
+Key implementation details:
+- `draw` splits the frame vertically: `Constraint::Length(4)` for the display
+  box (2 border + 2 content rows), `Constraint::Fill(1)` for the button area.
+- `Block::bordered().padding(Padding::horizontal(1))` draws the border;
+  `block.inner(area)` is called *before* `render_widget` to capture the inner
+  rect before the block is moved.
+- Inner area split into two `Fill(1)` rows. When result is `Some`: top row =
+  dim expression, bottom row = bold result. When `None`: top empty, bottom =
+  bold expression. Both rows right-aligned via `Line::right_aligned()`.
+- `expr_to_display` / `display_to_expr` extracted as `pub fn` in `app.rs` so
+  both conversion directions live in the same module. `expr_to_display` replaces
+  `*`→`×` and `/`→`÷`; used in `draw`. `display_to_expr` is the inverse; used
+  in `append`.
 
 ## Known Issues / Deferred
 
@@ -74,5 +92,5 @@ Three follow-up tasks were added to `docs/TASKS.md` during implementation:
 
 ## Next Task
 
-**ui-display** — `docs/tasks/ui-display.md`
-Render the display box (top of the screen, showing expression and/or result).
+**ui-buttons** — `docs/tasks/ui-buttons.md`
+Render the button grid with focus highlighting.
