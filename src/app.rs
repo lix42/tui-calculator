@@ -95,6 +95,14 @@ impl App {
     }
 }
 
+pub fn expr_to_display(expr: &str) -> String {
+    expr.replace('*', "×").replace('/', "÷")
+}
+
+pub fn display_to_expr(s: &str) -> String {
+    s.replace('×', "*").replace('÷', "/")
+}
+
 /// Converts an evaluated f64 into a display string.
 ///
 /// TODO: implement this function.
