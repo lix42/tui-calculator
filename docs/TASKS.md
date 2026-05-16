@@ -6,7 +6,7 @@
 [ ] app-display-split: Separate display string from internal expression
 [ ] app-ui-state: Extract UI state from App into its own struct/file
 [x] tui-skeleton: Terminal setup and event loop
-[ ] ui-display: Render display box
+[x] ui-display: Render display box
 [ ] ui-buttons: Render button grid with focus
 [ ] key-input: Direct keyboard input handling
 [ ] button-nav: Button navigation with HJKL/arrows
