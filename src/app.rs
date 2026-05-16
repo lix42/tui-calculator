@@ -95,19 +95,15 @@ impl App {
     }
 }
 
+pub fn expr_to_display(expr: &str) -> String {
+    expr.replace('*', "×").replace('/', "÷")
+}
+
+pub fn display_to_expr(s: &str) -> String {
+    s.replace('×', "*").replace('÷', "/")
+}
+
 /// Converts an evaluated f64 into a display string.
-///
-/// TODO: implement this function.
-///
-/// Some questions to consider:
-///   - How many decimal places should a repeating result like 1/3 show?
-///   - Should integers display as "8" or "8.0"?
-///   - At what magnitude should you switch to scientific notation (if at all)?
-///   - How should you handle negative zero (-0.0)?
-///
-/// A reasonable starting point: detect whole numbers and format them as integers;
-/// for everything else, format with a fixed number of significant decimal digits
-/// and strip trailing zeros.
 fn format_number(val: f64) -> String {
     if val == 0.0 {
         return "0".to_string(); // handles -0.0
