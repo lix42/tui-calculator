@@ -69,6 +69,27 @@ Key implementation details:
   `*`→`×` and `/`→`÷`; used in `draw`. `display_to_expr` is the inverse; used
   in `append`.
 
+### ui-buttons — `src/ui.rs`
+Renders the 5×4 button grid with focus highlight. No unit tests (manual
+verification: launch, confirm button grid visible with `=` highlighted cyan).
+
+Key implementation details:
+- `draw` reduced to a 28×29 centered panel; delegates to `draw_display` (renamed
+  from the inline code in `ui-display`) and `draw_buttons`.
+- `centered_panel(area, w, h)` uses `Fill(1) / Length / Fill(1)` twice — first
+  vertically, then horizontally — to position a fixed-size rect in the middle of
+  any terminal area. Standard Ratatui centering pattern.
+- `draw_buttons` allocates `[Length(5); 5]` rows and `[Length(7); 4]` cols. Fixed
+  sizes rather than `Fill(1)` so buttons don't stretch on large terminals.
+- Each button: `Block::bordered().padding(Padding::symmetric(2, 1))` +
+  `Paragraph::new(label).centered()`. Horizontal padding 2 compensates for the
+  ~2:1 tall-to-wide cell aspect ratio in most monospace fonts.
+- `button_styles(focused)` returns `(block_style, text_style)`: focused =
+  `fg(Cyan)` on both block and text, plus `BOLD` on text. Chose color + weight
+  over blink (blink is stripped by most modern terminals and signals error/alert
+  by convention rather than selection).
+- `draw` now discards `_button_area` entirely — the `ui-display` stub is gone.
+
 ## Known Issues / Deferred
 
 Three follow-up tasks were added to `docs/TASKS.md` during implementation:
@@ -92,5 +113,4 @@ Three follow-up tasks were added to `docs/TASKS.md` during implementation:
 
 ## Next Task
 
-**ui-buttons** — `docs/tasks/ui-buttons.md`
-Render the button grid with focus highlighting.
+**key-input** — direct keyboard input handling

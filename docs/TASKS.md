@@ -7,7 +7,7 @@
 [ ] app-ui-state: Extract UI state from App into its own struct/file
 [x] tui-skeleton: Terminal setup and event loop
 [x] ui-display: Render display box
-[ ] ui-buttons: Render button grid with focus
+[x] ui-buttons: Render button grid with focus
 [ ] key-input: Direct keyboard input handling
 [ ] button-nav: Button navigation with HJKL/arrows
 [ ] mouse-input: Mouse click support
