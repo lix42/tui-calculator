@@ -1,6 +1,6 @@
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::style::{Color, Modifier, Style, Stylize};
+use ratatui::style::{Style, Stylize};
 use ratatui::text::Line;
 use ratatui::widgets::{Block, Padding, Paragraph};
 
@@ -50,12 +50,12 @@ fn draw_display(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 fn draw_buttons(frame: &mut Frame, app: &App, area: Rect) {
-    let row_constraints = [Constraint::Length(5); 5];
+    let row_constraints = [Constraint::Max(5); 5];
     let col_constraints = [Constraint::Length(7); 4];
-    let rows = Layout::vertical(row_constraints).split(area);
+    let rows = Layout::vertical(row_constraints).areas::<5>(area);
 
     for (r, row_area) in rows.iter().enumerate() {
-        let cells = Layout::horizontal(col_constraints).split(*row_area);
+        let cells = Layout::horizontal(col_constraints).areas::<4>(*row_area);
         for (c, cell_area) in cells.iter().enumerate() {
             let label = BUTTONS[r][c];
             let focused = app.focus == (r, c);
@@ -79,11 +79,8 @@ fn draw_button(frame: &mut Frame, label: &str, focused: bool, area: Rect) {
 /// Returns `(block_style, text_style)` for a button based on whether it is focused.
 fn button_styles(focused: bool) -> (Style, Style) {
     if focused {
-        (
-            Style::default().fg(Color::Cyan),
-            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
-        )
+        (Style::new().cyan(), Style::new().cyan().bold())
     } else {
-        (Style::default(), Style::default())
+        (Style::new(), Style::new())
     }
 }
