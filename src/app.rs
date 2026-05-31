@@ -1,4 +1,4 @@
-use crate::eval;
+use crate::eval::{self, Token};
 
 pub const BUTTONS: [[&str; 4]; 5] = [
     ["C", "(", ")", "÷"],
@@ -99,23 +99,29 @@ pub fn expr_to_display(expr: &str) -> String {
     expr.replace('*', "×").replace('/', "÷")
 }
 
-pub fn display_to_expr(s: &str) -> String {
-    s.replace('×', "*").replace('÷', "/")
+/// Renders the committed `expr` tokens plus the in-progress `current` buffer
+/// into the string shown in the display. Numbers go through `format_number`;
+/// operators map to their display glyphs (`*`→`×`, `/`→`÷`). This is the
+/// display-side inverse of the keystroke mapping in `press_button`.
+pub fn display_string(expr: &[Token], current: &str) -> String {
+    let mut out = String::new();
+    for token in expr {
+        match token {
+            Token::Number(n) => out.push_str(&format_number(*n)),
+            Token::Op('*') => out.push('×'),
+            Token::Op('/') => out.push('÷'),
+            Token::Op(c) => out.push(*c),
+            Token::LParen => out.push('('),
+            Token::RParen => out.push(')'),
+        }
+    }
+    out.push_str(current);
+    out
 }
 
-/// Converts an evaluated f64 into a display string.
-///
-/// TODO: implement this function.
-///
-/// Some questions to consider:
-///   - How many decimal places should a repeating result like 1/3 show?
-///   - Should integers display as "8" or "8.0"?
-///   - At what magnitude should you switch to scientific notation (if at all)?
-///   - How should you handle negative zero (-0.0)?
-///
-/// A reasonable starting point: detect whole numbers and format them as integers;
-/// for everything else, format with a fixed number of significant decimal digits
-/// and strip trailing zeros.
+/// Converts an evaluated `f64` into a display string: whole numbers render as
+/// integers (`8`, not `8.0`); everything else is trimmed to 10 decimal places
+/// with trailing zeros stripped. The single place an `f64` becomes display text.
 fn format_number(val: f64) -> String {
     if val == 0.0 {
         return "0".to_string(); // handles -0.0
@@ -223,6 +229,49 @@ mod tests {
     #[test]
     fn focused_label_default() {
         assert_eq!(App::new().focused_label(), "=");
+    }
+
+    #[test]
+    fn display_string_maps_operators_to_glyphs() {
+        assert_eq!(
+            display_string(
+                &[Token::Number(6.0), Token::Op('/'), Token::Number(2.0)],
+                ""
+            ),
+            "6÷2"
+        );
+        assert_eq!(
+            display_string(
+                &[Token::Number(3.0), Token::Op('*'), Token::Number(4.0)],
+                ""
+            ),
+            "3×4"
+        );
+    }
+
+    #[test]
+    fn display_string_appends_current() {
+        let expr = [Token::Number(78.0), Token::Op('-')];
+        assert_eq!(display_string(&expr, "65"), "78-65");
+    }
+
+    #[test]
+    fn display_string_empty_is_blank() {
+        assert_eq!(display_string(&[], ""), "");
+    }
+
+    #[test]
+    fn display_string_renders_parens_and_single_number() {
+        let parens = [
+            Token::LParen,
+            Token::Number(1.0),
+            Token::Op('+'),
+            Token::Number(2.0),
+            Token::RParen,
+        ];
+        assert_eq!(display_string(&parens, ""), "(1+2)");
+        // Post-`=` collapsed state: a lone Number renders as its formatted value.
+        assert_eq!(display_string(&[Token::Number(-247.0)], ""), "-247");
     }
 
     #[test]
