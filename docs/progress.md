@@ -90,27 +90,53 @@ Key implementation details:
   by convention rather than selection).
 - `draw` now discards `_button_area` entirely — the `ui-display` stub is gone.
 
+### app-display-split — `src/eval.rs`, `src/app.rs`, `src/ui.rs`
+Tokenized internal expression, fixing the post-`=` precision bug. 17 new unit
+tests (35 total), all passing.
+
+Key implementation details:
+- `eval::Token` (`Number(f64) | Op(char) | LParen | RParen`) + `eval_tokens`,
+  a recursive-descent evaluator over `&[Token]` mirroring the original grammar.
+  The `&str` `eval` and `Parser` are kept but now unreachable from the binary.
+- `App` fields are now `expr: Vec<Token>`, `current: String` (in-progress
+  number being typed — the only place trailing `.` / leading `0.` can be
+  represented faithfully), and `mode: Mode` (`Editing | Evaluated(String) |
+  Error(String)`). `mode`, `expr`, `current` are private; `ui.rs` goes through
+  `display_lines()`.
+- **Precision fix**: on `=`, `expr` collapses to `[Token::Number(value)]`. A
+  following operator just appends to it, so the full-precision `f64` head is
+  preserved across chained calculations — `1 ÷ 3 = × 3 =` now returns exactly
+  `1`. Test: `full_precision_preserved_through_operator`.
+- `Mode::Evaluated(snapshot)` carries the pre-eval display string so the
+  two-line display (dim expression on top, bold result on bottom, established
+  in `ui-display`) survives the rewrite. `Mode::Error(msg)` holds the failure
+  message directly — no more `parse::<f64>()` discrimination.
+- Backspace token rule (`backspace_editing`): one keypress = one visible char.
+  Pop `current`, else pop a token; a popped `Number` is pulled back via
+  `format_number` *and* has its last digit dropped in the same press (without
+  that second `pop`, the keypress wouldn't change the display). Backspace in
+  the post-`=` state clears like `C`. Test: `backspace_trace_78_minus_65`.
+- `app::display_string(&[Token], &str)` is the single live-rendering function;
+  `format_number` remains the only place an `f64` becomes display text. The
+  old `expr_to_display` / `display_to_expr` string-replace helpers are gone —
+  input is captured as `Op` tokens, never via string substitution.
+- Subsumed `app-result-state`: the `Mode` enum does that task's job
+  (`Evaluated` / `Error` replace `Option<String>`).
+
 ## Known Issues / Deferred
 
-Three follow-up tasks were added to `docs/TASKS.md` during implementation:
+- **eval cleanup**: the `&str` `eval::eval` and `Parser` (with their 8 tests)
+  are now unreachable from the binary; clippy reports them as dead. Kept for
+  now to keep `app-display-split` focused; deletion is a small follow-up.
 
-- **app-result-state**: `result: Option<String>` conflates a numeric result and
-  an error message. Should become `Option<EvalResult>` where `EvalResult` is
-  `Value(f64) | Error(String)`. Avoids using `parse::<f64>()` as a
-  discriminator and lets the UI format the number rather than the model.
-
-- **app-display-split**: Post-eval operator continuation currently builds the
-  new expression from the *display string* (`"0.3333..."`), losing the original
-  expression. Should keep the original expression and wrap it in parens when
-  needed (e.g. `"1+3"` → `"(1+3)*"`), while the display shows the formatted
-  result. Requires a separate `display: String` field.
-
-- **app-ui-state**: `App` currently holds both app state (`expression`,
-  `result`, `should_quit`) and UI state (`focus`, `BUTTONS`, `move_focus`,
-  `focused_label`). UI state should eventually move to a `UiState` struct, with
-  keyboard/mouse handlers resolving input to an `Action` enum before passing to
-  `App`. Deferred until `tui-skeleton` and `key-input` exist.
+- **app-ui-state**: `App` currently holds both app state (`expr`, `current`,
+  `mode`, `should_quit`) and UI state (`focus`, `BUTTONS`, `move_focus`,
+  `focused_label`). UI state should eventually move to a `UiState` struct,
+  with keyboard/mouse handlers resolving input to an `Action` enum before
+  passing to `App`. Deferred until `key-input` exists.
 
 ## Next Task
 
-**key-input** — direct keyboard input handling
+**key-input** — direct keyboard input handling. Will also clear the current
+dead-code warnings on `App`'s methods (`press_button`, `evaluate`, etc.) once
+they're wired to keypresses.

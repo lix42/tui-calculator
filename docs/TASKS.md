@@ -2,8 +2,8 @@
 
 [x] eval-parser: Expression parser and evaluator
 [x] app-state: Application state and core logic
-[ ] app-result-state: Refactor result field to a proper enum
-[ ] app-display-split: Separate display string from internal expression
+[~] app-result-state: superseded by app-display-split (the new Mode enum replaces result: Option<String>)
+[x] app-display-split: Tokenize the expression; separate display from internal state
 [ ] app-ui-state: Extract UI state from App into its own struct/file
 [x] tui-skeleton: Terminal setup and event loop
 [x] ui-display: Render display box
