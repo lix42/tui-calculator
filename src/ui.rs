@@ -4,7 +4,7 @@ use ratatui::style::{Style, Stylize};
 use ratatui::text::Line;
 use ratatui::widgets::{Block, Padding, Paragraph};
 
-use crate::app::{App, BUTTONS, expr_to_display};
+use crate::app::{App, BUTTONS};
 
 pub fn draw(frame: &mut Frame, app: &App) {
     let panel = centered_panel(frame.area(), 28, 29);
@@ -39,12 +39,7 @@ fn draw_display(frame: &mut Frame, app: &App, area: Rect) {
     let [top_area, bottom_area] =
         Layout::vertical([Constraint::Fill(1), Constraint::Fill(1)]).areas(inner);
 
-    let display_expr = expr_to_display(&app.expression);
-
-    let (top, bottom) = match &app.result {
-        Some(result) => (display_expr.as_str(), result.as_str()),
-        None => ("", display_expr.as_str()),
-    };
+    let (top, bottom) = app.display_lines();
     frame.render_widget(Line::from(top).right_aligned().dim(), top_area);
     frame.render_widget(Line::from(bottom).right_aligned().bold(), bottom_area);
 }
