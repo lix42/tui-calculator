@@ -83,8 +83,16 @@ impl App {
             self.current.clear();
             self.mode = Mode::Editing;
         }
-        if ch == "." && self.current.contains('.') {
-            return; // reject a second '.' in the same number
+        if ch == "." {
+            if self.current.contains('.') {
+                return; // reject a second '.' in the same number
+            }
+            if self.current.is_empty() {
+                // Bare "." doesn't parse as f64; normalize to "0." so the
+                // number is well-formed from the first keystroke.
+                self.current.push_str("0.");
+                return;
+            }
         }
         self.current.push_str(ch);
     }
@@ -166,8 +174,6 @@ impl App {
     }
 
     /// Remove exactly one visible character while editing.
-    ///
-    /// TODO(you): implement the backspace token rule.
     ///
     /// One keypress must delete exactly one character of what's on screen.
     /// The display is `display_string(&self.expr, &self.current)`, so:
@@ -293,6 +299,32 @@ mod tests {
         }
         assert_eq!(app.expr, vec![Token::Number(5.0), Token::Op('+')]);
         assert_eq!(app.current, "3");
+    }
+
+    #[test]
+    fn leading_dot_normalizes_to_zero_dot() {
+        // Bare "." doesn't parse as f64, so a leading "." is normalized to
+        // "0." up front. Without this, finalize would silently drop the
+        // buffer and `.+` would jump straight to `+` on the display.
+        let mut app = App::new();
+        app.press_button(".");
+        assert_eq!(app.current, "0.");
+        app.press_button("5");
+        assert_eq!(app.current, "0.5");
+
+        // `.` then `=` now resolves to 0, not a blank display.
+        let mut app = App::new();
+        app.press_button(".");
+        app.press_button("=");
+        assert_eq!(app.expr, vec![Token::Number(0.0)]);
+        assert_eq!(app.display_lines().1, "0");
+
+        // `.` after an operator still works.
+        let mut app = App::new();
+        for b in ["1", "+", ".", "5", "="] {
+            app.press_button(b);
+        }
+        assert_eq!(app.expr, vec![Token::Number(1.5)]);
     }
 
     #[test]
