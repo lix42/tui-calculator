@@ -271,10 +271,13 @@ fn format_number(val: f64) -> String {
         return format!("{}", val as i64);
     }
     // otherwise: trim trailing zeros after N decimal places
-    format!("{:.10}", val)
+    let s = format!("{:.10}", val)
         .trim_end_matches('0')
         .trim_end_matches('.')
-        .to_string()
+        .to_string();
+    // {:.10} can round a tiny ±epsilon (e.g. 0.5-0.4-0.1 ≈ -2.8e-17) down to
+    // zero magnitude while keeping the sign, yielding "-0"; show plain "0".
+    if s == "-0" { "0".to_string() } else { s }
 }
 
 #[cfg(test)]
@@ -517,6 +520,24 @@ mod tests {
     #[test]
     fn display_string_empty_is_blank() {
         assert_eq!(display_string(&[], ""), "");
+    }
+
+    #[test]
+    fn near_zero_negative_epsilon_formats_as_zero() {
+        // 0.5-0.4-0.1 lands at ~-2.8e-17 in f64, which {:.10} rounds to zero
+        // magnitude but with a stray sign. The display must read "0", not "-0".
+        let mut app = App::new();
+        for b in ["0", ".", "5", "-", "0", ".", "4", "-", "0", ".", "1", "="] {
+            app.press_button(b);
+        }
+        assert_eq!(app.display_lines().1, "0");
+    }
+
+    #[test]
+    fn format_number_normalizes_negative_zero() {
+        assert_eq!(format_number(-2.7755575615628914e-17), "0");
+        // a genuine small value is still shown, not snapped away
+        assert_eq!(format_number(-0.0001), "-0.0001");
     }
 
     #[test]
