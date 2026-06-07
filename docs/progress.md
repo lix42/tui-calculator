@@ -158,7 +158,10 @@ Key implementation details:
   `focused_label`). UI state should eventually move to a `UiState` struct,
   with keyboard/mouse handlers resolving input to an `Action` enum before
   passing to `App`. Now unblocked: `key-input` exists, so `handle_event` is the
-  natural place to resolve input to an `Action`.
+  natural place to resolve input to an `Action`. Concrete motivation (the
+  stringly-typed `press_button(&str)` catch-all that accepts `"a"` silently,
+  plus the `register_press(&str)` entry point `button-nav` adds) is written up
+  in `docs/tasks/app-ui-state.md` under "Why".
 
 - **dead code**: `move_focus` / `focused_label` are still unused — they're the
   building blocks for `button-nav` and clear once it lands.
