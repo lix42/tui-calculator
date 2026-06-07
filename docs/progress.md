@@ -3,9 +3,14 @@
 ## Completed
 
 ### eval-parser — `src/eval.rs`
-Recursive descent parser and evaluator. Handles `+-*/`, parentheses, unary
-minus, decimals, and whitespace. Returns `Result<f64, String>`. 8 unit tests,
-all passing.
+Recursive-descent evaluator over `&[Token]`. Handles `+-*/`, parentheses,
+operator precedence, and unary minus. Returns `Result<f64, String>`. 7 unit
+tests in `token_tests`, all passing.
+
+> Originally a `&str` recursive-descent parser (`eval`/`Parser`, 8 tests).
+> `app-display-split` replaced it with `eval_tokens` over `Token`s built in
+> `app.rs`, and `eval-cleanup` (#6) deleted the now-unreachable string parser
+> and its tests. This section describes the current token-based form.
 
 ### app-state — `src/app.rs`
 `App` struct with all calculator state and methods. 10 unit tests, all passing.
