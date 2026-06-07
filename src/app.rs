@@ -271,13 +271,15 @@ fn format_number(val: f64) -> String {
         return format!("{}", val as i64);
     }
     // otherwise: trim trailing zeros after N decimal places
-    let s = format!("{:.10}", val)
-        .trim_end_matches('0')
-        .trim_end_matches('.')
-        .to_string();
+    let s = format!("{:.10}", val);
+    let trimmed = s.trim_end_matches('0').trim_end_matches('.');
     // {:.10} can round a tiny ±epsilon (e.g. 0.5-0.4-0.1 ≈ -2.8e-17) down to
     // zero magnitude while keeping the sign, yielding "-0"; show plain "0".
-    if s == "-0" { "0".to_string() } else { s }
+    if trimmed == "-0" {
+        "0".to_string()
+    } else {
+        trimmed.to_string()
+    }
 }
 
 #[cfg(test)]

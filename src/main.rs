@@ -93,29 +93,28 @@ fn handle_event(event: Event, app: &mut App) {
 /// Most keys map to their own label 1:1. The interesting cases are where the
 /// keyboard's ASCII alphabet diverges from the grid's display glyphs.
 fn key_char_to_label(ch: char) -> Option<&'static str> {
-    Some(match ch {
-        '0' => "0",
-        '1' => "1",
-        '2' => "2",
-        '3' => "3",
-        '4' => "4",
-        '5' => "5",
-        '6' => "6",
-        '7' => "7",
-        '8' => "8",
-        '9' => "9",
-        '.' => ".",
-        '*' => "×",
-        '/' => "÷",
-        '+' => "+",
-        '-' => "-",
-        '(' => "(",
-        ')' => ")",
-        '=' => "=",
-        'c' => "C",
-        'C' => "C",
-        _ => return None,
-    })
+    match ch {
+        '0' => Some("0"),
+        '1' => Some("1"),
+        '2' => Some("2"),
+        '3' => Some("3"),
+        '4' => Some("4"),
+        '5' => Some("5"),
+        '6' => Some("6"),
+        '7' => Some("7"),
+        '8' => Some("8"),
+        '9' => Some("9"),
+        '.' => Some("."),
+        '*' => Some("×"),
+        '/' => Some("÷"),
+        '+' => Some("+"),
+        '-' => Some("-"),
+        '(' => Some("("),
+        ')' => Some(")"),
+        '=' => Some("="),
+        'c' | 'C' => Some("C"),
+        _ => None,
+    }
 }
 
 fn main() -> Result<()> {
