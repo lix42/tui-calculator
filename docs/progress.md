@@ -3,9 +3,14 @@
 ## Completed
 
 ### eval-parser — `src/eval.rs`
-Recursive descent parser and evaluator. Handles `+-*/`, parentheses, unary
-minus, decimals, and whitespace. Returns `Result<f64, String>`. 8 unit tests,
-all passing.
+Recursive-descent evaluator over `&[Token]`. Handles `+-*/`, parentheses,
+operator precedence, and unary minus. Returns `Result<f64, String>`. 7 unit
+tests in `token_tests`, all passing.
+
+> Originally a `&str` recursive-descent parser (`eval`/`Parser`, 8 tests).
+> `app-display-split` replaced it with `eval_tokens` over `Token`s built in
+> `app.rs`, and `eval-cleanup` (#6) deleted the now-unreachable string parser
+> and its tests. This section describes the current token-based form.
 
 ### app-state — `src/app.rs`
 `App` struct with all calculator state and methods. 10 unit tests, all passing.
@@ -123,20 +128,43 @@ Key implementation details:
 - Subsumed `app-result-state`: the `Mode` enum does that task's job
   (`Evaluated` / `Error` replace `Option<String>`).
 
-## Known Issues / Deferred
+### key-input — `src/main.rs`, `src/app.rs`
+Direct keyboard input wired into the event loop, plus a `-0` display fix. 3 new
+unit tests for the key mapping (33 total), all passing.
 
-- **eval cleanup**: the `&str` `eval::eval` and `Parser` (with their 8 tests)
-  are now unreachable from the binary; clippy reports them as dead. Kept for
-  now to keep `app-display-split` focused; deletion is a small follow-up.
+Key implementation details:
+- `handle_event` now routes keys to `App`: `Backspace`→`backspace`,
+  `Enter`→`evaluate`, and printable `Char(ch)` through `key_char_to_label` →
+  `press_button`. Quit keys remain `q` / `Esc` / `Ctrl+C`.
+- `Ctrl+C` is checked *before* the bare-`c` mapping (which clears) so the two
+  don't collide. Quit and clear are distinct: `c`/`C` → `"C"` (clear), `q` →
+  quit.
+- `key_char_to_label(ch) -> Option<&'static str>` maps a typed character to the
+  grid label `press_button` expects, so keyboard and button grid share one
+  definition of input behavior. ASCII diverges from the display glyphs only for
+  `*`→`×` and `/`→`÷`; everything else is 1:1. Unmapped keys return `None`.
+- Wiring these calls clears the long-standing "never used" warnings on
+  `press_button`, `evaluate`, `clear`, `backspace`. (`move_focus` /
+  `focused_label` are still unused — they belong to `button-nav`.)
+- **`-0` fix** (`format_number`): `{:.10}` can round a tiny ±epsilon
+  (e.g. `0.5-0.4-0.1 ≈ -2.8e-17`) to zero magnitude while keeping the sign,
+  printing `"-0"`. The formatter now trims on the `&str` slice and returns
+  plain `"0"` for that case. Test: `near_zero_negative_epsilon_formats_as_zero`.
+
+## Known Issues / Deferred
 
 - **app-ui-state**: `App` currently holds both app state (`expr`, `current`,
   `mode`, `should_quit`) and UI state (`focus`, `BUTTONS`, `move_focus`,
   `focused_label`). UI state should eventually move to a `UiState` struct,
   with keyboard/mouse handlers resolving input to an `Action` enum before
-  passing to `App`. Deferred until `key-input` exists.
+  passing to `App`. Now unblocked: `key-input` exists, so `handle_event` is the
+  natural place to resolve input to an `Action`.
+
+- **dead code**: `move_focus` / `focused_label` are still unused — they're the
+  building blocks for `button-nav` and clear once it lands.
 
 ## Next Task
 
-**key-input** — direct keyboard input handling. Will also clear the current
-dead-code warnings on `App`'s methods (`press_button`, `evaluate`, etc.) once
-they're wired to keypresses.
+**button-nav** — button navigation with HJKL/arrows. `move_focus` and
+`focused_label` already exist on `App`; this task wires arrow/HJKL keys in
+`handle_event` to move focus, and Space/Enter to press the focused button.

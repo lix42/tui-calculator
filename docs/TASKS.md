@@ -9,7 +9,7 @@
 [x] tui-skeleton: Terminal setup and event loop
 [x] ui-display: Render display box
 [x] ui-buttons: Render button grid with focus
-[ ] key-input: Direct keyboard input handling
+[x] key-input: Direct keyboard input handling
 [ ] button-nav: Button navigation with HJKL/arrows
 [ ] mouse-input: Mouse click support
 [ ] copy-clipboard: Copy result to system clipboard
