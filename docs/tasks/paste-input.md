@@ -57,16 +57,27 @@ API verified against crossterm 0.29 docs (Context7 `/crossterm-rs/crossterm`):
            if ch.is_whitespace() {
                continue; // strip spaces/tabs/newlines
            }
-           if let Some(label) = key_char_to_label(ch) {
-               app.press_button(label); // reuse the keyboard mapping
+           // Accept the display glyphs directly so text copied from our own
+           // display round-trips; otherwise fall back to the keyboard mapping.
+           let label = match ch {
+               '×' => Some("×"),
+               '÷' => Some("÷"),
+               _ => key_char_to_label(ch),
+           };
+           if let Some(label) = label {
+               app.press_button(label);
            }
            // unmapped chars silently skipped (see decision below)
        }
    }
    ```
 
-   Reuses `key_char_to_label`, so keyboard input and paste share one definition
-   of what a valid character is.
+   Reuses `key_char_to_label`, so ASCII keyboard input and paste share one
+   definition of what a valid character is. The extra `×` / `÷` arms cover a
+   real round-trip: the display shows those glyphs (not `*` / `/`), so a user
+   who copies an expression out of the calculator and pastes it back would
+   otherwise have the operators silently dropped — `key_char_to_label` only
+   maps the ASCII forms.
 
 ## Open Design Decisions
 
