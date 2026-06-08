@@ -103,9 +103,7 @@ async fn watch_example() {
     let (tx, mut rx) = watch::channel("initial".to_string());
 
     tokio::spawn(async move {
-        loop {
-            // Wait for changes
-            rx.changed().await.unwrap();
+        while rx.changed().await.is_ok() {
             println!("New value: {}", *rx.borrow());
         }
     });
