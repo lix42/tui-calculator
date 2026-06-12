@@ -1,8 +1,8 @@
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::style::{Style, Stylize};
+use ratatui::style::{Color, Style, Stylize};
 use ratatui::text::Line;
-use ratatui::widgets::{Block, Padding, Paragraph};
+use ratatui::widgets::{Block, BorderType, Padding, Paragraph};
 
 use crate::app::{App, BUTTONS};
 
@@ -54,28 +54,74 @@ fn draw_buttons(frame: &mut Frame, app: &App, area: Rect) {
         for (c, cell_area) in cells.iter().enumerate() {
             let label = BUTTONS[r][c];
             let focused = app.focus == (r, c);
-            draw_button(frame, label, focused, *cell_area);
+            let pressed = app.is_pressed((r, c));
+            draw_button(frame, label, focused, pressed, *cell_area);
         }
     }
 }
 
-fn draw_button(frame: &mut Frame, label: &str, focused: bool, area: Rect) {
-    let (block_style, text_style) = button_styles(focused);
+fn draw_button(frame: &mut Frame, label: &str, focused: bool, pressed: bool, area: Rect) {
+    let style = button_styles(focused, pressed);
     let block = Block::bordered()
-        .style(block_style)
+        .border_type(style.border_type)
+        .border_style(style.border_style)
+        .style(style.block_style)
         .padding(Padding::symmetric(2, 1));
     let paragraph = Paragraph::new(label)
         .centered()
-        .style(text_style)
+        .style(style.text_style)
         .block(block);
     frame.render_widget(paragraph, area);
 }
 
-/// Returns `(block_style, text_style)` for a button based on whether it is focused.
-fn button_styles(focused: bool) -> (Style, Style) {
-    if focused {
-        (Style::new().cyan(), Style::new().cyan().bold())
+/// The full visual description of a button in one state.
+///
+/// Splitting the border out from the block lets a state recolor the frame
+/// (`border_style`) or swap the line characters (`border_type`, e.g. a `Thick`
+/// or `Double` frame to read as "pushed in") independently of the cell fill
+/// (`block_style`) and the label (`text_style`).
+struct ButtonStyle {
+    /// Base style for the cell — primarily its background fill.
+    block_style: Style,
+    /// Style applied to the label text.
+    text_style: Style,
+    /// Color/weight of the border characters.
+    border_style: Style,
+    /// Which line-drawing set the border uses.
+    border_type: BorderType,
+}
+
+static PRESSED_STYLE: ButtonStyle = ButtonStyle {
+    block_style: Style::new().on_light_cyan(),
+    text_style: Style::new().dark_gray().bold(),
+    border_style: Style::new().cyan().bg(Color::Reset),
+    border_type: BorderType::Rounded,
+};
+static FOCUSED_STYLE: ButtonStyle = ButtonStyle {
+    block_style: Style::new(),
+    text_style: Style::new().cyan().bold(),
+    border_style: Style::new().cyan(),
+    border_type: BorderType::Rounded,
+};
+static REGULAR_STYLE: ButtonStyle = ButtonStyle {
+    block_style: Style::new(),
+    text_style: Style::new(),
+    border_style: Style::new(),
+    border_type: BorderType::Rounded,
+};
+
+/// Returns the [`ButtonStyle`] for a button across its three states.
+///
+/// A pressed button is *always* also the focused one (you can only activate the
+/// focused cell), so `pressed` is checked first and takes precedence over
+/// `focused`. The flash is momentary — `App::tick` clears it after
+/// `FLASH_DURATION` — so this style is what the user sees "on key down".
+fn button_styles(focused: bool, pressed: bool) -> &'static ButtonStyle {
+    if pressed {
+        &PRESSED_STYLE
+    } else if focused {
+        &FOCUSED_STYLE
     } else {
-        (Style::new(), Style::new())
+        &REGULAR_STYLE
     }
 }

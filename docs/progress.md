@@ -151,23 +151,56 @@ Key implementation details:
   printing `"-0"`. The formatter now trims on the `&str` slice and returns
   plain `"0"` for that case. Test: `near_zero_negative_epsilon_formats_as_zero`.
 
+### button-nav — `src/main.rs`, `src/app.rs`, `src/ui.rs`
+HJKL/arrow focus navigation, Space/Enter activation, and a momentary "pressed"
+flash. 6 new unit tests (39 total), all passing.
+
+Key implementation details:
+- `handle_event` checks `focus_delta(code)` *first* and `return`s on a match, so
+  HJKL/arrows move focus only (no activation, no flash). `focus_delta` maps
+  Left/H, Down/J, Up/K, Right/L (vim + arrows, both cases) to `(dr, dc)`;
+  everything else is `None` and falls through to activation.
+- Every activating key funnels through `activate(app, label)` =
+  `press_button(label)` + `register_press(label)`, so keyboard, grid, and (later)
+  mouse share one path and focus follows input. Space activates the focused
+  label; **Enter always evaluates** (`activate(app, "=")`) and Backspace routes
+  through its `"⌫"` label — both rely on `press_button`'s label dispatch.
+- `focused_label` return type widened `&str` → `&'static str` (it returns a
+  `BUTTONS` const), decoupling it from `&self` so `activate(app,
+  app.focused_label())` can hold the label while mutably borrowing `app`.
+- **Press flash** (no terminal key-release event exists): `App` gains
+  `flash: Option<(usize,usize)>` + `flash_at: Instant`. `register_press` sets
+  them, `is_pressed` queries, and `tick()` (called once per run-loop iteration
+  before draw) clears the flash after `FLASH_DURATION` (120 ms). `flash` is a
+  field distinct from `focus` because the two diverge when you navigate during
+  the flash window. Expiry is paced by the 100 ms event poll.
+- `position_of(label)` is the inverse of `BUTTONS[r][c]`, backed by a
+  `static LABEL_POS: LazyLock<HashMap<&str,(usize,usize)>>` reverse index built
+  once on first lookup and derived from `BUTTONS` (single source of truth).
+- **UI**: `button_styles(focused, pressed)` returns a `&'static ButtonStyle`
+  struct (`block_style` / `text_style` / `border_style` / `border_type`) instead
+  of the old `(Style, Style)` tuple, so a state can recolor the frame or swap the
+  line characters independently of the fill. Three `static` presets
+  (`REGULAR`/`FOCUSED`/`PRESSED`); `pressed` takes precedence since a pressed
+  cell is always also focused. `Color::Reset` on the pressed border keeps it
+  visible (theme-independent) over the cyan fill. Returning `&'static` requires
+  the presets be `static` (a fixed address to borrow), not `const`.
+
 ## Known Issues / Deferred
 
 - **app-ui-state**: `App` currently holds both app state (`expr`, `current`,
   `mode`, `should_quit`) and UI state (`focus`, `BUTTONS`, `move_focus`,
-  `focused_label`). UI state should eventually move to a `UiState` struct,
-  with keyboard/mouse handlers resolving input to an `Action` enum before
-  passing to `App`. Now unblocked: `key-input` exists, so `handle_event` is the
-  natural place to resolve input to an `Action`. Concrete motivation (the
-  stringly-typed `press_button(&str)` catch-all that accepts `"a"` silently,
-  plus the `register_press(&str)` entry point `button-nav` adds) is written up
-  in `docs/tasks/app-ui-state.md` under "Why".
-
-- **dead code**: `move_focus` / `focused_label` are still unused — they're the
-  building blocks for `button-nav` and clear once it lands.
+  `focused_label`, and the new `flash` / `flash_at` fields). UI state should
+  eventually move to a `UiState` struct, with keyboard/mouse handlers resolving
+  input to an `Action` enum before passing to `App`. Now unblocked: `key-input`
+  exists, so `handle_event` is the natural place to resolve input to an `Action`.
+  Concrete motivation (the stringly-typed `press_button(&str)` catch-all that
+  accepts `"a"` silently, plus the `register_press(&str)` entry point
+  `button-nav` added) is written up in `docs/tasks/app-ui-state.md` under "Why".
 
 ## Next Task
 
-**button-nav** — button navigation with HJKL/arrows. `move_focus` and
-`focused_label` already exist on `App`; this task wires arrow/HJKL keys in
-`handle_event` to move focus, and Space/Enter to press the focused button.
+**mouse-input** — mouse click support. `activate` is already the shared
+activation funnel and `position_of` maps a label back to its grid cell; mouse
+handling resolves a click coordinate to a button and routes it through the same
+path so clicks get focus-follow and the press flash for free.
