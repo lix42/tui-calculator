@@ -1,4 +1,13 @@
+use std::collections::HashMap;
+use std::sync::LazyLock;
+use std::time::{Duration, Instant};
+
 use crate::eval::{self, Token};
+
+/// How long a button stays in its "pressed" look after activation. Terminals
+/// have no key-release event, so the press is shown as a brief flash that the
+/// run loop's `tick` clears once this much time has passed.
+const FLASH_DURATION: Duration = Duration::from_millis(120);
 
 pub const BUTTONS: [[&str; 4]; 5] = [
     ["C", "(", ")", "÷"],
@@ -29,6 +38,8 @@ pub struct App {
     current: String,  // in-progress number being typed, e.g. "1.50"
     mode: Mode,       // editing vs post-`=` (gates Copy / ⌫ / fresh digit)
     pub focus: (usize, usize),
+    flash: Option<(usize, usize)>, // button showing its momentary "pressed" look
+    flash_at: Instant,             // when the current flash began (see FLASH_DURATION)
     pub should_quit: bool,
 }
 
@@ -39,6 +50,8 @@ impl App {
             current: String::new(),
             mode: Mode::Editing,
             focus: (4, 3),
+            flash: None,
+            flash_at: Instant::now(),
             should_quit: false,
         }
     }
@@ -235,9 +248,56 @@ impl App {
         self.focus.1 = (self.focus.1 as i32 + dc).clamp(0, cols - 1) as usize;
     }
 
-    pub fn focused_label(&self) -> &str {
+    /// `&'static` because `BUTTONS` is a `'static` const — returning it untied
+    /// from `&self` lets the caller hold the label while mutably borrowing the
+    /// app (e.g. `let l = app.focused_label(); app.press_button(l);`).
+    pub fn focused_label(&self) -> &'static str {
         BUTTONS[self.focus.0][self.focus.1]
     }
+
+    /// Record that `label` was just activated: focus follows it and its press
+    /// flash starts. No-op if the label isn't on the grid. The run loop's
+    /// `tick` clears the flash after `FLASH_DURATION`.
+    pub fn register_press(&mut self, label: &str) {
+        if let Some(pos) = position_of(label) {
+            self.focus = pos;
+            self.flash = Some(pos);
+            self.flash_at = Instant::now();
+        }
+    }
+
+    /// Whether the button at `pos` is currently showing its pressed flash.
+    pub fn is_pressed(&self, pos: (usize, usize)) -> bool {
+        self.flash == Some(pos)
+    }
+
+    /// Expire the press flash once it has been visible for `FLASH_DURATION`.
+    /// Called once per run-loop iteration before drawing.
+    pub fn tick(&mut self) {
+        if self.flash.is_some() && self.flash_at.elapsed() >= FLASH_DURATION {
+            self.flash = None;
+        }
+    }
+}
+
+/// Reverse index of `BUTTONS`: label → grid position. Built once on first
+/// lookup (`LazyLock`) and derived from `BUTTONS`, so it stays in sync with the
+/// grid — `BUTTONS` is the single source of truth — at no startup cost.
+static LABEL_POS: LazyLock<HashMap<&'static str, (usize, usize)>> = LazyLock::new(|| {
+    let mut map = HashMap::new();
+    for (r, row) in BUTTONS.iter().enumerate() {
+        for (c, label) in row.iter().enumerate() {
+            map.insert(*label, (r, c));
+        }
+    }
+    map
+});
+
+/// Grid position of `label`, or `None` if no button carries it. The inverse of
+/// `BUTTONS[r][c]`; used to make focus follow keyboard input and to locate the
+/// cell to flash.
+pub fn position_of(label: &str) -> Option<(usize, usize)> {
+    LABEL_POS.get(label).copied()
 }
 
 /// Renders the committed `expr` tokens plus the in-progress `current` buffer
@@ -491,6 +551,43 @@ mod tests {
     #[test]
     fn focused_label_default() {
         assert_eq!(App::new().focused_label(), "=");
+    }
+
+    #[test]
+    fn position_of_finds_labels_and_misses() {
+        assert_eq!(position_of("C"), Some((0, 0)));
+        assert_eq!(position_of("="), Some((4, 3)));
+        assert_eq!(position_of("5"), Some((2, 1)));
+        assert_eq!(position_of("⌫"), Some((4, 0)));
+        assert_eq!(position_of("?"), None);
+    }
+
+    #[test]
+    fn register_press_moves_focus_and_flashes() {
+        let mut app = App::new(); // focus starts on "=" at (4, 3)
+        app.register_press("5");
+        assert_eq!(app.focus, (2, 1)); // focus followed the input
+        assert!(app.is_pressed((2, 1))); // and that cell is flashing
+        assert!(!app.is_pressed((4, 3))); // the old focus is not
+    }
+
+    #[test]
+    fn register_press_ignores_unknown_label() {
+        let mut app = App::new();
+        app.register_press("?");
+        assert_eq!(app.focus, (4, 3)); // unchanged
+        assert!(!app.is_pressed((4, 3)));
+    }
+
+    #[test]
+    fn tick_keeps_fresh_flash() {
+        // A flash set this instant is well within FLASH_DURATION, so tick must
+        // leave it visible. (Expiry after the duration is paced by the run loop
+        // and exercised manually rather than with a sleep here.)
+        let mut app = App::new();
+        app.register_press("5");
+        app.tick();
+        assert!(app.is_pressed((2, 1)));
     }
 
     // --- display_string ---

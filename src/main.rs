@@ -51,6 +51,9 @@ fn install_panic_hook() {
 
 fn run(terminal: &mut Tui, app: &mut App) -> Result<()> {
     while !app.should_quit {
+        // Expire any press flash before drawing; the 100ms poll below paces
+        // this, so a flash clears ~1-2 ticks after the key (a brief blink).
+        app.tick();
         terminal.draw(|frame| ui::draw(frame, app))?;
         if event::poll(Duration::from_millis(100))? {
             handle_event(event::read()?, app);
@@ -61,9 +64,9 @@ fn run(terminal: &mut Tui, app: &mut App) -> Result<()> {
 
 /// Dispatches a single terminal event to the app.
 ///
-/// Direct keyboard shortcuts work regardless of button focus. Printable
-/// characters are routed through `press_button` so keys and the button grid
-/// share one definition of input behavior; control keys map to App methods.
+/// Navigation (HJKL / arrows) moves the grid focus. Every key that *activates*
+/// a button goes through `activate`, so focus follows the input and the button
+/// flashes — keyboard, the button grid, and (later) the mouse share one path.
 fn handle_event(event: Event, app: &mut App) {
     if let Event::Key(key) = event
         && key.kind == KeyEventKind::Press
@@ -73,17 +76,53 @@ fn handle_event(event: Event, app: &mut App) {
             app.should_quit = true;
             return;
         }
+        // HJKL / arrows move focus only — no activation, no flash. Gated on no
+        // Ctrl/Alt so terminal control chords (Ctrl-H = Backspace, Ctrl-L =
+        // redraw, …) aren't swallowed as navigation. Shift is allowed — that's
+        // how the uppercase HJKL variants arrive.
+        if !key
+            .modifiers
+            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+            && let Some((dr, dc)) = focus_delta(key.code)
+        {
+            app.move_focus(dr, dc);
+            return;
+        }
         match key.code {
             KeyCode::Char('q') | KeyCode::Esc => app.should_quit = true,
-            KeyCode::Backspace => app.backspace(),
-            KeyCode::Enter => app.evaluate(),
+            // Space activates whatever is focused, leaving focus put so it can
+            // be re-pressed in place.
+            KeyCode::Char(' ') => activate(app, app.focused_label()),
+            // Enter always evaluates (pressing "=" *is* evaluate); focus snaps
+            // to "=" to match. Backspace likewise routes through its label.
+            KeyCode::Enter => activate(app, "="),
+            KeyCode::Backspace => activate(app, "⌫"),
             KeyCode::Char(ch) => {
                 if let Some(label) = key_char_to_label(ch) {
-                    app.press_button(label);
+                    activate(app, label);
                 }
             }
             _ => {}
         }
+    }
+}
+
+/// Press a button by `label`, then make focus follow it and flash it. The
+/// single funnel for every activation so feedback is uniform across inputs.
+fn activate(app: &mut App, label: &str) {
+    app.press_button(label);
+    app.register_press(label);
+}
+
+/// Maps a navigation key to a `(row_delta, col_delta)` focus move. Accepts both
+/// vim HJKL (either case) and the arrow keys; everything else is `None`.
+fn focus_delta(code: KeyCode) -> Option<(i32, i32)> {
+    match code {
+        KeyCode::Left | KeyCode::Char('h') | KeyCode::Char('H') => Some((0, -1)),
+        KeyCode::Down | KeyCode::Char('j') | KeyCode::Char('J') => Some((1, 0)),
+        KeyCode::Up | KeyCode::Char('k') | KeyCode::Char('K') => Some((-1, 0)),
+        KeyCode::Right | KeyCode::Char('l') | KeyCode::Char('L') => Some((0, 1)),
+        _ => None,
     }
 }
 
@@ -129,6 +168,7 @@ fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crossterm::event::KeyEvent;
 
     #[test]
     fn key_maps_ascii_operators_to_glyphs() {
@@ -148,6 +188,55 @@ mod tests {
         // Clear is case-insensitive so Shift doesn't matter.
         assert_eq!(key_char_to_label('c'), Some("C"));
         assert_eq!(key_char_to_label('C'), Some("C"));
+    }
+
+    #[test]
+    fn nav_keys_map_to_focus_deltas() {
+        // Left/H, Down/J, Up/K, Right/L — vim and arrows, both cases.
+        assert_eq!(focus_delta(KeyCode::Left), Some((0, -1)));
+        assert_eq!(focus_delta(KeyCode::Char('h')), Some((0, -1)));
+        assert_eq!(focus_delta(KeyCode::Char('H')), Some((0, -1)));
+        assert_eq!(focus_delta(KeyCode::Down), Some((1, 0)));
+        assert_eq!(focus_delta(KeyCode::Char('j')), Some((1, 0)));
+        assert_eq!(focus_delta(KeyCode::Up), Some((-1, 0)));
+        assert_eq!(focus_delta(KeyCode::Char('k')), Some((-1, 0)));
+        assert_eq!(focus_delta(KeyCode::Right), Some((0, 1)));
+        assert_eq!(focus_delta(KeyCode::Char('l')), Some((0, 1)));
+    }
+
+    #[test]
+    fn non_nav_keys_have_no_delta() {
+        // Digits, operators, and other keys must fall through to activation,
+        // not be swallowed as navigation.
+        assert_eq!(focus_delta(KeyCode::Char('5')), None);
+        assert_eq!(focus_delta(KeyCode::Char('+')), None);
+        assert_eq!(focus_delta(KeyCode::Enter), None);
+        assert_eq!(focus_delta(KeyCode::Char(' ')), None);
+    }
+
+    #[test]
+    fn bare_nav_key_moves_focus() {
+        // Sanity baseline for the modifier gate below: an unmodified nav key
+        // still navigates.
+        let mut app = App::new(); // focus starts on "=" at (4, 3)
+        handle_event(
+            Event::Key(KeyEvent::new(KeyCode::Char('h'), KeyModifiers::NONE)),
+            &mut app,
+        );
+        assert_eq!(app.focus, (4, 2)); // moved left
+    }
+
+    #[test]
+    fn ctrl_nav_key_is_not_navigation() {
+        // Ctrl-H (and friends) must not be swallowed as "move focus left" — the
+        // Ctrl/Alt gate lets control chords keep their terminal meaning. Here
+        // Ctrl-H has no calculator action, so focus must stay put.
+        let mut app = App::new(); // focus at (4, 3)
+        handle_event(
+            Event::Key(KeyEvent::new(KeyCode::Char('h'), KeyModifiers::CONTROL)),
+            &mut app,
+        );
+        assert_eq!(app.focus, (4, 3)); // unchanged
     }
 
     #[test]
