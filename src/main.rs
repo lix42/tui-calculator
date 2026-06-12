@@ -76,8 +76,15 @@ fn handle_event(event: Event, app: &mut App) {
             app.should_quit = true;
             return;
         }
-        // HJKL / arrows move focus only — no activation, no flash.
-        if let Some((dr, dc)) = focus_delta(key.code) {
+        // HJKL / arrows move focus only — no activation, no flash. Gated on no
+        // Ctrl/Alt so terminal control chords (Ctrl-H = Backspace, Ctrl-L =
+        // redraw, …) aren't swallowed as navigation. Shift is allowed — that's
+        // how the uppercase HJKL variants arrive.
+        if !key
+            .modifiers
+            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+            && let Some((dr, dc)) = focus_delta(key.code)
+        {
             app.move_focus(dr, dc);
             return;
         }
@@ -161,6 +168,7 @@ fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crossterm::event::KeyEvent;
 
     #[test]
     fn key_maps_ascii_operators_to_glyphs() {
@@ -204,6 +212,31 @@ mod tests {
         assert_eq!(focus_delta(KeyCode::Char('+')), None);
         assert_eq!(focus_delta(KeyCode::Enter), None);
         assert_eq!(focus_delta(KeyCode::Char(' ')), None);
+    }
+
+    #[test]
+    fn bare_nav_key_moves_focus() {
+        // Sanity baseline for the modifier gate below: an unmodified nav key
+        // still navigates.
+        let mut app = App::new(); // focus starts on "=" at (4, 3)
+        handle_event(
+            Event::Key(KeyEvent::new(KeyCode::Char('h'), KeyModifiers::NONE)),
+            &mut app,
+        );
+        assert_eq!(app.focus, (4, 2)); // moved left
+    }
+
+    #[test]
+    fn ctrl_nav_key_is_not_navigation() {
+        // Ctrl-H (and friends) must not be swallowed as "move focus left" — the
+        // Ctrl/Alt gate lets control chords keep their terminal meaning. Here
+        // Ctrl-H has no calculator action, so focus must stay put.
+        let mut app = App::new(); // focus at (4, 3)
+        handle_event(
+            Event::Key(KeyEvent::new(KeyCode::Char('h'), KeyModifiers::CONTROL)),
+            &mut app,
+        );
+        assert_eq!(app.focus, (4, 3)); // unchanged
     }
 
     #[test]
