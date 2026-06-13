@@ -7,6 +7,7 @@ use std::time::Duration;
 
 use crossterm::event::{
     self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers,
+    MouseButton, MouseEventKind,
 };
 use crossterm::execute;
 use crossterm::terminal::{
@@ -15,7 +16,7 @@ use crossterm::terminal::{
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 
-use app::App;
+use app::{App, BUTTONS};
 
 type Tui = Terminal<CrosstermBackend<Stdout>>;
 
@@ -68,6 +69,17 @@ fn run(terminal: &mut Tui, app: &mut App) -> Result<()> {
 /// a button goes through `activate`, so focus follows the input and the button
 /// flashes — keyboard, the button grid, and (later) the mouse share one path.
 fn handle_event(event: Event, app: &mut App) {
+    // A left-click resolves to a grid cell (if any) and activates it through the
+    // same funnel as the keyboard, so the click gets focus-follow and the press
+    // flash. Clicks that miss every button are ignored.
+    if let Event::Mouse(mouse) = event {
+        if let MouseEventKind::Down(MouseButton::Left) = mouse.kind
+            && let Some((r, c)) = app.button_at(mouse.column, mouse.row)
+        {
+            activate(app, BUTTONS[r][c]);
+        }
+        return;
+    }
     if let Event::Key(key) = event
         && key.kind == KeyEventKind::Press
     {

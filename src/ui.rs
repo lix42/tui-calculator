@@ -6,7 +6,7 @@ use ratatui::widgets::{Block, BorderType, Padding, Paragraph};
 
 use crate::app::{App, BUTTONS};
 
-pub fn draw(frame: &mut Frame, app: &App) {
+pub fn draw(frame: &mut Frame, app: &mut App) {
     let panel = centered_panel(frame.area(), 28, 29);
     let [display_area, button_area] =
         Layout::vertical([Constraint::Length(4), Constraint::Length(25)]).areas(panel);
@@ -44,11 +44,12 @@ fn draw_display(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(Line::from(bottom).right_aligned().bold(), bottom_area);
 }
 
-fn draw_buttons(frame: &mut Frame, app: &App, area: Rect) {
+fn draw_buttons(frame: &mut Frame, app: &mut App, area: Rect) {
     let row_constraints = [Constraint::Max(5); 5];
     let col_constraints = [Constraint::Length(7); 4];
     let rows = Layout::vertical(row_constraints).areas::<5>(area);
 
+    let mut rects = [[Rect::ZERO; 4]; 5];
     for (r, row_area) in rows.iter().enumerate() {
         let cells = Layout::horizontal(col_constraints).areas::<4>(*row_area);
         for (c, cell_area) in cells.iter().enumerate() {
@@ -56,8 +57,12 @@ fn draw_buttons(frame: &mut Frame, app: &App, area: Rect) {
             let focused = app.focus == (r, c);
             let pressed = app.is_pressed((r, c));
             draw_button(frame, label, focused, pressed, *cell_area);
+            rects[r][c] = *cell_area;
         }
     }
+    // Hand the just-rendered geometry to the app so the next mouse event can
+    // hit-test against exactly what's on screen.
+    app.set_button_rects(rects);
 }
 
 fn draw_button(frame: &mut Frame, label: &str, focused: bool, pressed: bool, area: Rect) {

@@ -11,6 +11,6 @@
 [x] ui-buttons: Render button grid with focus
 [x] key-input: Direct keyboard input handling
 [x] button-nav: Button navigation with HJKL/arrows
-[ ] mouse-input: Mouse click support
+[x] mouse-input: Mouse click support
 [ ] paste-input: Paste a whole expression via bracketed paste
 [ ] copy-clipboard: Copy result to system clipboard
