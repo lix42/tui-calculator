@@ -2,6 +2,8 @@ use std::collections::HashMap;
 use std::sync::LazyLock;
 use std::time::{Duration, Instant};
 
+use ratatui::layout::{Position, Rect};
+
 use crate::eval::{self, Token};
 
 /// How long a button stays in its "pressed" look after activation. Terminals
@@ -40,6 +42,10 @@ pub struct App {
     pub focus: (usize, usize),
     flash: Option<(usize, usize)>, // button showing its momentary "pressed" look
     flash_at: Instant,             // when the current flash began (see FLASH_DURATION)
+    // Screen rect of each grid cell, captured by the UI each draw. Mouse
+    // hit-testing reads these (see `button_at`). UI state living in `App` is a
+    // known wart — it migrates out with `focus`/`flash` when `app-ui-state` lands.
+    button_rects: [[Rect; 4]; 5],
     pub should_quit: bool,
 }
 
@@ -52,6 +58,7 @@ impl App {
             focus: (4, 3),
             flash: None,
             flash_at: Instant::now(),
+            button_rects: [[Rect::ZERO; 4]; 5],
             should_quit: false,
         }
     }
@@ -269,6 +276,34 @@ impl App {
     /// Whether the button at `pos` is currently showing its pressed flash.
     pub fn is_pressed(&self, pos: (usize, usize)) -> bool {
         self.flash == Some(pos)
+    }
+
+    /// Record the screen rect of every grid cell. Called by the UI once per
+    /// draw so `button_at` can hit-test the *current* layout (the panel is
+    /// re-centered on resize, so last frame's rects are the truth for the next
+    /// mouse event).
+    pub fn set_button_rects(&mut self, rects: [[Rect; 4]; 5]) {
+        self.button_rects = rects;
+    }
+
+    /// Resolve a click at terminal coordinates `(col, row)` to the grid cell it
+    /// landed on, or `None` if it missed every button.
+    ///
+    /// `self.button_rects[r][c]` holds the screen `Rect` of each cell as of the
+    /// last draw. Each rect spans its cell *including* the border, so a click on
+    /// a button's frame still counts as a hit — the generous behavior we want,
+    /// no inset math needed. The layout tiles without overlap, so the first
+    /// containing cell is the only one.
+    pub fn button_at(&self, col: u16, row: u16) -> Option<(usize, usize)> {
+        let pos = Position { x: col, y: row };
+        for (r, grid_row) in self.button_rects.iter().enumerate() {
+            for (c, row_cell) in grid_row.iter().enumerate() {
+                if row_cell.contains(pos) {
+                    return Some((r, c));
+                }
+            }
+        }
+        None
     }
 
     /// Expire the press flash once it has been visible for `FLASH_DURATION`.
@@ -569,6 +604,29 @@ mod tests {
         assert_eq!(app.focus, (2, 1)); // focus followed the input
         assert!(app.is_pressed((2, 1))); // and that cell is flashing
         assert!(!app.is_pressed((4, 3))); // the old focus is not
+    }
+
+    #[test]
+    fn button_at_resolves_clicks_to_cells() {
+        // Synthetic grid: cell (r, c) is a 7×5 rect at (c*7, r*5). This mirrors
+        // the real layout's fixed cell size but is independent of it, so the
+        // test pins down `button_at`'s hit-test logic, not the UI geometry.
+        let mut app = App::new();
+        let mut rects = [[Rect::ZERO; 4]; 5];
+        for (r, row) in rects.iter_mut().enumerate() {
+            for (c, cell) in row.iter_mut().enumerate() {
+                *cell = Rect::new(c as u16 * 7, r as u16 * 5, 7, 5);
+            }
+        }
+        app.set_button_rects(rects);
+
+        // A point inside the "7" cell (row 1, col 0 → x∈[0,7), y∈[5,10)).
+        assert_eq!(app.button_at(3, 7), Some((1, 0)));
+        assert_eq!(BUTTONS[1][0], "7");
+        // The "=" cell (row 4, col 3).
+        assert_eq!(app.button_at(23, 22), Some((4, 3)));
+        // A click well outside every cell hits nothing.
+        assert_eq!(app.button_at(200, 200), None);
     }
 
     #[test]

@@ -186,11 +186,35 @@ Key implementation details:
   visible (theme-independent) over the cyan fill. Returning `&'static` requires
   the presets be `static` (a fixed address to borrow), not `const`.
 
+### mouse-input — `src/app.rs`, `src/ui.rs`, `src/main.rs`
+Left-click activation via hit-testing stored button rects. 1 new unit test (42
+total), all passing.
+
+Key implementation details:
+- `App` gains `button_rects: [[Rect; 4]; 5]` (init `Rect::ZERO`). `ui::draw_buttons`
+  records each cell's screen `Rect` as it renders and hands the grid to
+  `App::set_button_rects` once per frame — so the hit-test always matches what's
+  on screen (the panel re-centers on resize). This made `draw` / `draw_buttons`
+  take `&mut App`.
+- `App::button_at(col, row)` walks the grid and returns the first cell whose rect
+  `contains` the click, else `None`. Rects span the cell *including* the border,
+  so a click on the frame still counts — no inset math. The layout tiles without
+  overlap (and `Rect::contains` is half-open), so the first match is unambiguous.
+- Coordinates line up because crossterm mouse `column`/`row` are 0-based absolute
+  cells and `frame.area()` starts at `(0,0)`; the stored rects are absolute, so no
+  area needs to reach `handle_event`.
+- `handle_event` gets an `Event::Mouse` arm: `Down(Left)` → `button_at` →
+  `activate(app, BUTTONS[r][c])`, reusing the shared funnel so a click gets
+  focus-follow and the press flash for free. The arm `return`s for every mouse
+  event, so non-left/non-down events are inert. Mouse capture was already enabled
+  in `setup_terminal`, so no terminal-setup change was needed.
+
 ## Known Issues / Deferred
 
 - **app-ui-state**: `App` currently holds both app state (`expr`, `current`,
   `mode`, `should_quit`) and UI state (`focus`, `BUTTONS`, `move_focus`,
-  `focused_label`, and the new `flash` / `flash_at` fields). UI state should
+  `focused_label`, the `flash` / `flash_at` fields, and now `button_rects` /
+  `set_button_rects` / `button_at`). UI state should
   eventually move to a `UiState` struct, with keyboard/mouse handlers resolving
   input to an `Action` enum before passing to `App`. Now unblocked: `key-input`
   exists, so `handle_event` is the natural place to resolve input to an `Action`.
@@ -200,7 +224,7 @@ Key implementation details:
 
 ## Next Task
 
-**mouse-input** — mouse click support. `activate` is already the shared
-activation funnel and `position_of` maps a label back to its grid cell; mouse
-handling resolves a click coordinate to a button and routes it through the same
-path so clicks get focus-follow and the press flash for free.
+**paste-input** — paste a whole expression via bracketed paste. The event loop
+already discards `Event::Paste` as a no-op (`handle_event` only matches `Key` and
+`Mouse`); this task adds a `Paste(String)` arm that feeds each character through
+the same label-mapping path the keyboard uses.
