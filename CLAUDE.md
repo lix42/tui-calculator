@@ -17,12 +17,15 @@ TUI calculator built with Rust (edition 2024) and Ratatui 0.30 / Crossterm 0.29.
 
 ## Architecture
 
-Currently a single `src/main.rs` stub. The README describes the target design:
+Modules under `src/`:
 
-- **Input**: expression-based (digits, `+-*/`, parentheses), keyboard (HJKL/arrows for button navigation), and mouse click support
-- **UI**: Ratatui-based TUI with a button grid layout
-- **Evaluation**: parse and evaluate arithmetic expressions with operator precedence
+- **`main.rs`** — terminal setup/teardown and the event loop. `handle_event` resolves each key/mouse event to an `Action` (or a focus move) and dispatches it; `key_to_action` is the single keyboard→`Action` map.
+- **`action.rs`** — the typed input boundary. An `Action` enum plus a validated `Digit` newtype (private field, fallible `Digit::new`, so an out-of-range digit is unrepresentable). `from_key` (keyboard ASCII) and `from_label` (button-grid glyphs) resolve raw input into an `Action` *before* it reaches `App`, so illegal input is rejected at the edge instead of mishandled downstream. Pure domain logic — no crossterm dependency.
+- **`app.rs`** — `App` holds the calculator state (`expr` tokens, in-progress `current` number, `mode`) and the logic. `App::apply(Action)` is the single input entry point: a total match over the enum, no catch-all.
+- **`ui_state.rs`** — `UiState`: button-grid focus, the momentary press flash, and the on-screen cell geometry used for mouse hit-testing. Deliberately separate from `App` (rendering/input-routing vs. calculator logic); `focus` is private, mutated only through bounds-safe methods.
+- **`eval.rs`** — recursive-descent evaluator over `Token`s with operator precedence, parentheses, and unary minus.
+- **`ui.rs`** — Ratatui rendering: the display box (reads `&App`) and the button grid (reads `&mut UiState`).
 
-Key dependencies: `ratatui` for terminal UI rendering, `crossterm` (with `event-stream` feature) for terminal input handling, `arboard` for system clipboard access.
+Input is **expression-based** (digits, `+-*/`, parentheses); keyboard (HJKL/arrows navigate the grid) and mouse clicks both funnel through the same `Action` boundary.
 
-- **Copy to clipboard**: after evaluation, a "Copy" button appears (auto-focused). Space/Enter/click copies result to system clipboard. Button dismissed on new input.
+Key dependencies: `ratatui` (TUI rendering), `crossterm` (terminal input), `arboard` (system clipboard — for the still-pending copy-to-clipboard feature; see `docs/TASKS.md`).
