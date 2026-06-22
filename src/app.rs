@@ -1,23 +1,5 @@
-use std::collections::HashMap;
-use std::sync::LazyLock;
-use std::time::{Duration, Instant};
-
-use ratatui::layout::{Position, Rect};
-
+use crate::action::Action;
 use crate::eval::{self, Token};
-
-/// How long a button stays in its "pressed" look after activation. Terminals
-/// have no key-release event, so the press is shown as a brief flash that the
-/// run loop's `tick` clears once this much time has passed.
-const FLASH_DURATION: Duration = Duration::from_millis(120);
-
-pub const BUTTONS: [[&str; 4]; 5] = [
-    ["C", "(", ")", "÷"],
-    ["7", "8", "9", "×"],
-    ["4", "5", "6", "-"],
-    ["1", "2", "3", "+"],
-    ["⌫", "0", ".", "="],
-];
 
 /// What state the calculator is in. Drives both input handling and rendering.
 ///
@@ -39,13 +21,6 @@ pub struct App {
     expr: Vec<Token>, // committed tokens — internal truth, full precision
     current: String,  // in-progress number being typed, e.g. "1.50"
     mode: Mode,       // editing vs post-`=` (gates Copy / ⌫ / fresh digit)
-    pub focus: (usize, usize),
-    flash: Option<(usize, usize)>, // button showing its momentary "pressed" look
-    flash_at: Instant,             // when the current flash began (see FLASH_DURATION)
-    // Screen rect of each grid cell, captured by the UI each draw. Mouse
-    // hit-testing reads these (see `button_at`). UI state living in `App` is a
-    // known wart — it migrates out with `focus`/`flash` when `app-ui-state` lands.
-    button_rects: [[Rect; 4]; 5],
     pub should_quit: bool,
 }
 
@@ -55,26 +30,24 @@ impl App {
             expr: Vec::new(),
             current: String::new(),
             mode: Mode::Editing,
-            focus: (4, 3),
-            flash: None,
-            flash_at: Instant::now(),
-            button_rects: [[Rect::ZERO; 4]; 5],
             should_quit: false,
         }
     }
 
-    pub fn press_button(&mut self, label: &str) {
-        match label {
-            "C" => self.clear(),
-            "⌫" => self.backspace(),
-            "=" => self.evaluate(),
-            "(" => self.push_lparen(),
-            ")" => self.push_rparen(),
-            "÷" => self.push_operator('/'),
-            "×" => self.push_operator('*'),
-            "+" => self.push_operator('+'),
-            "-" => self.push_operator('-'),
-            _ => self.push_digit(label), // digits and "."
+    /// Apply a resolved [`Action`]. Total over the enum — no catch-all arm — so
+    /// every input the boundary admits maps to a defined effect. This is the
+    /// single entry point for input; `Action`s are built in `action.rs` from
+    /// keyboard chars, grid labels, or clicks before they ever reach here.
+    pub fn apply(&mut self, action: Action) {
+        match action {
+            Action::Digit(d) => self.push_digit(d.get()),
+            Action::Dot => self.push_dot(),
+            Action::Op(op) => self.push_operator(op),
+            Action::LParen => self.push_lparen(),
+            Action::RParen => self.push_rparen(),
+            Action::Clear => self.clear(),
+            Action::Backspace => self.backspace(),
+            Action::Equals => self.evaluate(),
         }
     }
 
@@ -96,25 +69,35 @@ impl App {
         self.current.clear();
     }
 
-    fn push_digit(&mut self, ch: &str) {
+    /// A fresh digit, dot, or `(` after `=` discards the previous calculation
+    /// and returns to `Editing`. No-op while already editing.
+    fn reset_if_post_eval(&mut self) {
         if self.is_post_eval() {
-            // Fresh start: a digit after `=` discards the previous calculation.
             self.expr.clear();
             self.current.clear();
             self.mode = Mode::Editing;
         }
-        if ch == "." {
-            if self.current.contains('.') {
-                return; // reject a second '.' in the same number
-            }
-            if self.current.is_empty() {
-                // Bare "." doesn't parse as f64; normalize to "0." so the
-                // number is well-formed from the first keystroke.
-                self.current.push_str("0.");
-                return;
-            }
+    }
+
+    fn push_digit(&mut self, digit: u8) {
+        self.reset_if_post_eval();
+        // `digit` is a validated `Digit` (0..=9), so this is always an ASCII
+        // digit char.
+        self.current.push(char::from(b'0' + digit));
+    }
+
+    fn push_dot(&mut self) {
+        self.reset_if_post_eval();
+        if self.current.contains('.') {
+            return; // reject a second '.' in the same number
         }
-        self.current.push_str(ch);
+        if self.current.is_empty() {
+            // Bare "." doesn't parse as f64; normalize to "0." so the number is
+            // well-formed from the first keystroke.
+            self.current.push_str("0.");
+            return;
+        }
+        self.current.push('.');
     }
 
     fn push_operator(&mut self, op: char) {
@@ -137,9 +120,7 @@ impl App {
 
     fn push_lparen(&mut self) {
         if self.is_post_eval() {
-            self.expr.clear();
-            self.current.clear();
-            self.mode = Mode::Editing;
+            self.reset_if_post_eval();
         } else {
             self.finalize_current();
         }
@@ -247,98 +228,12 @@ impl App {
             Mode::Error(msg) => (live, msg.clone()),
         }
     }
-
-    pub fn move_focus(&mut self, dr: i32, dc: i32) {
-        let rows = BUTTONS.len() as i32;
-        let cols = BUTTONS[0].len() as i32;
-        self.focus.0 = (self.focus.0 as i32 + dr).clamp(0, rows - 1) as usize;
-        self.focus.1 = (self.focus.1 as i32 + dc).clamp(0, cols - 1) as usize;
-    }
-
-    /// `&'static` because `BUTTONS` is a `'static` const — returning it untied
-    /// from `&self` lets the caller hold the label while mutably borrowing the
-    /// app (e.g. `let l = app.focused_label(); app.press_button(l);`).
-    pub fn focused_label(&self) -> &'static str {
-        BUTTONS[self.focus.0][self.focus.1]
-    }
-
-    /// Record that `label` was just activated: focus follows it and its press
-    /// flash starts. No-op if the label isn't on the grid. The run loop's
-    /// `tick` clears the flash after `FLASH_DURATION`.
-    pub fn register_press(&mut self, label: &str) {
-        if let Some(pos) = position_of(label) {
-            self.focus = pos;
-            self.flash = Some(pos);
-            self.flash_at = Instant::now();
-        }
-    }
-
-    /// Whether the button at `pos` is currently showing its pressed flash.
-    pub fn is_pressed(&self, pos: (usize, usize)) -> bool {
-        self.flash == Some(pos)
-    }
-
-    /// Record the screen rect of every grid cell. Called by the UI once per
-    /// draw so `button_at` can hit-test the *current* layout (the panel is
-    /// re-centered on resize, so last frame's rects are the truth for the next
-    /// mouse event).
-    pub fn set_button_rects(&mut self, rects: [[Rect; 4]; 5]) {
-        self.button_rects = rects;
-    }
-
-    /// Resolve a click at terminal coordinates `(col, row)` to the grid cell it
-    /// landed on, or `None` if it missed every button.
-    ///
-    /// `self.button_rects[r][c]` holds the screen `Rect` of each cell as of the
-    /// last draw. Each rect spans its cell *including* the border, so a click on
-    /// a button's frame still counts as a hit — the generous behavior we want,
-    /// no inset math needed. The layout tiles without overlap, so the first
-    /// containing cell is the only one.
-    pub fn button_at(&self, col: u16, row: u16) -> Option<(usize, usize)> {
-        let pos = Position { x: col, y: row };
-        for (r, grid_row) in self.button_rects.iter().enumerate() {
-            for (c, row_cell) in grid_row.iter().enumerate() {
-                if row_cell.contains(pos) {
-                    return Some((r, c));
-                }
-            }
-        }
-        None
-    }
-
-    /// Expire the press flash once it has been visible for `FLASH_DURATION`.
-    /// Called once per run-loop iteration before drawing.
-    pub fn tick(&mut self) {
-        if self.flash.is_some() && self.flash_at.elapsed() >= FLASH_DURATION {
-            self.flash = None;
-        }
-    }
-}
-
-/// Reverse index of `BUTTONS`: label → grid position. Built once on first
-/// lookup (`LazyLock`) and derived from `BUTTONS`, so it stays in sync with the
-/// grid — `BUTTONS` is the single source of truth — at no startup cost.
-static LABEL_POS: LazyLock<HashMap<&'static str, (usize, usize)>> = LazyLock::new(|| {
-    let mut map = HashMap::new();
-    for (r, row) in BUTTONS.iter().enumerate() {
-        for (c, label) in row.iter().enumerate() {
-            map.insert(*label, (r, c));
-        }
-    }
-    map
-});
-
-/// Grid position of `label`, or `None` if no button carries it. The inverse of
-/// `BUTTONS[r][c]`; used to make focus follow keyboard input and to locate the
-/// cell to flash.
-pub fn position_of(label: &str) -> Option<(usize, usize)> {
-    LABEL_POS.get(label).copied()
 }
 
 /// Renders the committed `expr` tokens plus the in-progress `current` buffer
 /// into the string shown in the display. Numbers go through `format_number`;
 /// operators map to their display glyphs (`*`→`×`, `/`→`÷`). This is the
-/// display-side inverse of the keystroke mapping in `press_button`.
+/// display-side inverse of the input mapping in `apply`.
 pub fn display_string(expr: &[Token], current: &str) -> String {
     let mut out = String::new();
     for token in expr {
@@ -381,12 +276,19 @@ fn format_number(val: f64) -> String {
 mod tests {
     use super::*;
 
+    /// Apply the action a grid label resolves to. Lets these tests drive `App`
+    /// with button labels (`"5"`, `"×"`, `"⌫"`) while `apply` takes a typed
+    /// `Action` — `from_label` is the same edge the real UI resolves through.
+    fn press(app: &mut App, label: &str) {
+        app.apply(Action::from_label(label).expect("known button label"));
+    }
+
     // --- building an expression ---
 
     #[test]
     fn digit_builds_current() {
         let mut app = App::new();
-        app.press_button("5");
+        press(&mut app, "5");
         assert_eq!(app.current, "5");
         assert!(app.expr.is_empty());
     }
@@ -395,7 +297,7 @@ mod tests {
     fn operator_finalizes_current() {
         let mut app = App::new();
         for b in ["5", "+", "3"] {
-            app.press_button(b);
+            press(&mut app, b);
         }
         assert_eq!(app.expr, vec![Token::Number(5.0), Token::Op('+')]);
         assert_eq!(app.current, "3");
@@ -407,22 +309,22 @@ mod tests {
         // "0." up front. Without this, finalize would silently drop the
         // buffer and `.+` would jump straight to `+` on the display.
         let mut app = App::new();
-        app.press_button(".");
+        press(&mut app, ".");
         assert_eq!(app.current, "0.");
-        app.press_button("5");
+        press(&mut app, "5");
         assert_eq!(app.current, "0.5");
 
         // `.` then `=` now resolves to 0, not a blank display.
         let mut app = App::new();
-        app.press_button(".");
-        app.press_button("=");
+        press(&mut app, ".");
+        press(&mut app, "=");
         assert_eq!(app.expr, vec![Token::Number(0.0)]);
         assert_eq!(app.display_lines().1, "0");
 
         // `.` after an operator still works.
         let mut app = App::new();
         for b in ["1", "+", ".", "5", "="] {
-            app.press_button(b);
+            press(&mut app, b);
         }
         assert_eq!(app.expr, vec![Token::Number(1.5)]);
     }
@@ -431,7 +333,7 @@ mod tests {
     fn second_dot_is_rejected() {
         let mut app = App::new();
         for b in ["1", ".", "5", ".", "2"] {
-            app.press_button(b);
+            press(&mut app, b);
         }
         assert_eq!(app.current, "1.52"); // the second '.' is ignored
     }
@@ -442,7 +344,7 @@ mod tests {
     fn evaluate_collapses_to_number() {
         let mut app = App::new();
         for b in ["5", "+", "3", "="] {
-            app.press_button(b);
+            press(&mut app, b);
         }
         assert_eq!(app.expr, vec![Token::Number(8.0)]);
         assert_eq!(app.display_lines().1, "8");
@@ -453,7 +355,7 @@ mod tests {
     fn evaluated_keeps_expression_on_top_line() {
         let mut app = App::new();
         for b in ["7", "8", "-", "6", "5", "×", "5", "="] {
-            app.press_button(b);
+            press(&mut app, b);
         }
         assert_eq!(
             app.display_lines(),
@@ -465,7 +367,7 @@ mod tests {
     fn digit_after_result_starts_fresh() {
         let mut app = App::new();
         for b in ["5", "+", "3", "=", "2"] {
-            app.press_button(b);
+            press(&mut app, b);
         }
         assert!(app.expr.is_empty());
         assert_eq!(app.current, "2");
@@ -476,7 +378,7 @@ mod tests {
     fn operator_after_result_continues_from_value() {
         let mut app = App::new();
         for b in ["5", "+", "3", "=", "+"] {
-            app.press_button(b);
+            press(&mut app, b);
         }
         assert_eq!(app.expr, vec![Token::Number(8.0), Token::Op('+')]);
         assert!(matches!(app.mode, Mode::Editing));
@@ -489,7 +391,7 @@ mod tests {
         // head of `expr`, never round-tripping through "0.3333333333".
         let mut app = App::new();
         for b in ["1", "÷", "3", "=", "×", "3", "="] {
-            app.press_button(b);
+            press(&mut app, b);
         }
         assert_eq!(app.expr, vec![Token::Number(1.0)]);
         assert_eq!(app.display_lines().1, "1");
@@ -499,7 +401,7 @@ mod tests {
     fn parens_evaluate_correctly() {
         let mut app = App::new();
         for b in ["(", "1", "+", "2", ")", "×", "3", "="] {
-            app.press_button(b);
+            press(&mut app, b);
         }
         assert_eq!(app.expr, vec![Token::Number(9.0)]);
         assert_eq!(app.display_lines().1, "9");
@@ -509,10 +411,23 @@ mod tests {
     fn division_by_zero_sets_error() {
         let mut app = App::new();
         for b in ["1", "÷", "0", "="] {
-            app.press_button(b);
+            press(&mut app, b);
         }
         assert!(matches!(app.mode, Mode::Error(_)));
         assert_eq!(app.display_lines().1, "division by zero");
+    }
+
+    #[test]
+    fn keyboard_operator_multiplies_through_apply() {
+        // The keyboard route: ASCII `*`/`/` resolve via `from_key` to
+        // `Op('*')`/`Op('/')` and drive multiply/divide through `apply`
+        // end-to-end. (The grid reaches the same `Op` via the `×`/`÷` glyphs.)
+        let mut app = App::new();
+        for ch in ['6', '*', '7', '='] {
+            app.apply(Action::from_key(ch).expect("mapped key"));
+        }
+        assert_eq!(app.expr, vec![Token::Number(42.0)]);
+        assert_eq!(app.display_lines().1, "42");
     }
 
     // --- clear / backspace ---
@@ -521,7 +436,7 @@ mod tests {
     fn clear_resets_all() {
         let mut app = App::new();
         for b in ["5", "+", "3", "="] {
-            app.press_button(b);
+            press(&mut app, b);
         }
         app.clear();
         assert!(app.expr.is_empty());
@@ -533,9 +448,9 @@ mod tests {
     fn backspace_pops_current_char() {
         let mut app = App::new();
         for b in ["7", "8", "-", "6", "5"] {
-            app.press_button(b);
+            press(&mut app, b);
         }
-        app.press_button("⌫");
+        press(&mut app, "⌫");
         assert_eq!(app.current, "6");
         assert_eq!(app.expr, vec![Token::Number(78.0), Token::Op('-')]);
     }
@@ -544,18 +459,18 @@ mod tests {
     fn backspace_trace_78_minus_65() {
         let mut app = App::new();
         for b in ["7", "8", "-", "6", "5"] {
-            app.press_button(b);
+            press(&mut app, b);
         }
         assert_eq!(app.display_lines().1, "78-65");
-        app.press_button("⌫");
+        press(&mut app, "⌫");
         assert_eq!(app.display_lines().1, "78-6");
-        app.press_button("⌫");
+        press(&mut app, "⌫");
         assert_eq!(app.display_lines().1, "78-");
-        app.press_button("⌫");
+        press(&mut app, "⌫");
         assert_eq!(app.display_lines().1, "78"); // popped the Op token
-        app.press_button("⌫");
+        press(&mut app, "⌫");
         assert_eq!(app.display_lines().1, "7"); // pulled 78, dropped the 8
-        app.press_button("⌫");
+        press(&mut app, "⌫");
         assert_eq!(app.display_lines().1, "");
     }
 
@@ -563,89 +478,12 @@ mod tests {
     fn backspace_after_result_clears() {
         let mut app = App::new();
         for b in ["5", "+", "3", "="] {
-            app.press_button(b);
+            press(&mut app, b);
         }
-        app.press_button("⌫");
+        press(&mut app, "⌫");
         assert!(app.expr.is_empty());
         assert!(app.current.is_empty());
         assert!(matches!(app.mode, Mode::Editing));
-    }
-
-    // --- focus (unchanged) ---
-
-    #[test]
-    fn move_focus_clamps() {
-        let mut app = App::new();
-        app.focus = (0, 0);
-        app.move_focus(-5, -5);
-        assert_eq!(app.focus, (0, 0));
-        app.move_focus(99, 99);
-        assert_eq!(app.focus, (4, 3));
-    }
-
-    #[test]
-    fn focused_label_default() {
-        assert_eq!(App::new().focused_label(), "=");
-    }
-
-    #[test]
-    fn position_of_finds_labels_and_misses() {
-        assert_eq!(position_of("C"), Some((0, 0)));
-        assert_eq!(position_of("="), Some((4, 3)));
-        assert_eq!(position_of("5"), Some((2, 1)));
-        assert_eq!(position_of("⌫"), Some((4, 0)));
-        assert_eq!(position_of("?"), None);
-    }
-
-    #[test]
-    fn register_press_moves_focus_and_flashes() {
-        let mut app = App::new(); // focus starts on "=" at (4, 3)
-        app.register_press("5");
-        assert_eq!(app.focus, (2, 1)); // focus followed the input
-        assert!(app.is_pressed((2, 1))); // and that cell is flashing
-        assert!(!app.is_pressed((4, 3))); // the old focus is not
-    }
-
-    #[test]
-    fn button_at_resolves_clicks_to_cells() {
-        // Synthetic grid: cell (r, c) is a 7×5 rect at (c*7, r*5). This mirrors
-        // the real layout's fixed cell size but is independent of it, so the
-        // test pins down `button_at`'s hit-test logic, not the UI geometry.
-        let mut app = App::new();
-        let mut rects = [[Rect::ZERO; 4]; 5];
-        for (r, row) in rects.iter_mut().enumerate() {
-            for (c, cell) in row.iter_mut().enumerate() {
-                *cell = Rect::new(c as u16 * 7, r as u16 * 5, 7, 5);
-            }
-        }
-        app.set_button_rects(rects);
-
-        // A point inside the "7" cell (row 1, col 0 → x∈[0,7), y∈[5,10)).
-        assert_eq!(app.button_at(3, 7), Some((1, 0)));
-        assert_eq!(BUTTONS[1][0], "7");
-        // The "=" cell (row 4, col 3).
-        assert_eq!(app.button_at(23, 22), Some((4, 3)));
-        // A click well outside every cell hits nothing.
-        assert_eq!(app.button_at(200, 200), None);
-    }
-
-    #[test]
-    fn register_press_ignores_unknown_label() {
-        let mut app = App::new();
-        app.register_press("?");
-        assert_eq!(app.focus, (4, 3)); // unchanged
-        assert!(!app.is_pressed((4, 3)));
-    }
-
-    #[test]
-    fn tick_keeps_fresh_flash() {
-        // A flash set this instant is well within FLASH_DURATION, so tick must
-        // leave it visible. (Expiry after the duration is paced by the run loop
-        // and exercised manually rather than with a sleep here.)
-        let mut app = App::new();
-        app.register_press("5");
-        app.tick();
-        assert!(app.is_pressed((2, 1)));
     }
 
     // --- display_string ---
@@ -685,7 +523,7 @@ mod tests {
         // magnitude but with a stray sign. The display must read "0", not "-0".
         let mut app = App::new();
         for b in ["0", ".", "5", "-", "0", ".", "4", "-", "0", ".", "1", "="] {
-            app.press_button(b);
+            press(&mut app, b);
         }
         assert_eq!(app.display_lines().1, "0");
     }

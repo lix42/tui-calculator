@@ -209,22 +209,75 @@ Key implementation details:
   event, so non-left/non-down events are inert. Mouse capture was already enabled
   in `setup_terminal`, so no terminal-setup change was needed.
 
+### app-ui-state — `src/action.rs`, `src/ui_state.rs`, `src/app.rs`, `src/main.rs`, `src/ui.rs`
+Split UI state out of `App` into `UiState`, and replaced the stringly-typed
+`press_button(&str)` path with a typed `Action` input boundary. Net −177 lines
+across the three existing files while adding two modules. 9 new `action` tests
+(50 total), all passing. Done in three green checkpoints: (1) `action.rs`,
+(2) behavior-preserving `UiState` extraction, (3) the `Action` rewire.
+
+Key implementation details:
+- **`action.rs`** (new) — the typed boundary, deliberately **crossterm-free**
+  (pure domain logic). `Action` (`Digit(Digit) | Dot | Op(char) | LParen |
+  RParen | Clear | Backspace | Equals`) is the one normalized alphabet
+  `App::apply` consumes; `Op(char)` holds the *eval* operator (`*`/`/`), not the
+  display glyph. `Digit` is a newtype with a **private** field and a fallible
+  `Digit::new` (0..=9): enum variant fields inherit the enum's visibility and
+  can't be made private, so the newtype-in-its-own-module is what makes an
+  out-of-range digit unconstructable by type. Resolvers: `from_key(char)`
+  (keyboard ASCII — operators are `Op(ch)` since the keystroke *is* the eval
+  char), `from_label(&str)` (grid glyphs; only `× ÷ ⌫` diverge, every other
+  label delegates to `from_key` via `char: FromStr`), and `label()` (the inverse,
+  used to drive focus/flash).
+- **`ui_state.rs`** (new) — `UiState { focus, flash, flash_at, button_rects }`
+  with `move_focus / focused_label / register_press / is_pressed /
+  set_button_rects / button_at / tick`, plus `BUTTONS`, `FLASH_DURATION`,
+  `position_of` + `LABEL_POS`. Moved verbatim from `App` (the 7 UI tests moved
+  with it). `register_press` kept its `&str`-label signature — it's a legitimate
+  label→position UI lookup, not the `App` contract the task flagged.
+- **`app.rs`** — `App` slimmed to `expr / current / mode / should_quit`.
+  `apply(Action)` replaces `press_button(&str)` with a **total match, no `_`
+  arm**. `push_digit` now takes a `u8` (`char::from(b'0' + digit)`); the dot path
+  split into `push_dot`; the shared post-`=` reset factored into
+  `reset_if_post_eval`. Tests drive `App` through a `press(&mut app, label)`
+  helper that resolves via `from_label`.
+- **`main.rs`** (decision A) — `key_to_action(KeyCode) -> Option<Action>` is the
+  single keyboard→Action map: it owns `Enter → Equals` and `Backspace →
+  Backspace` (which arrive as `KeyCode`s, not chars) and delegates `Char(ch)` to
+  `from_key`. Navigation (`focus_delta`), Space (activate-focused via
+  `from_label`), and quit stay separate because they aren't `App` actions — Space
+  in particular *can't* be a static map entry since its effect depends on runtime
+  focus. `activate(app, ui, Action)` applies then flashes `action.label()`.
+  `key_char_to_label` deleted (subsumed by `from_key`).
+- **`ui.rs`** — `draw` takes `&App` + `&mut UiState`; `draw_display(&App)`,
+  `draw_buttons(&mut UiState)`.
+
 ## Known Issues / Deferred
 
-- **app-ui-state**: `App` currently holds both app state (`expr`, `current`,
-  `mode`, `should_quit`) and UI state (`focus`, `BUTTONS`, `move_focus`,
-  `focused_label`, the `flash` / `flash_at` fields, and now `button_rects` /
-  `set_button_rects` / `button_at`). UI state should
-  eventually move to a `UiState` struct, with keyboard/mouse handlers resolving
-  input to an `Action` enum before passing to `App`. Now unblocked: `key-input`
-  exists, so `handle_event` is the natural place to resolve input to an `Action`.
-  Concrete motivation (the stringly-typed `press_button(&str)` catch-all that
-  accepts `"a"` silently, plus the `register_press(&str)` entry point
-  `button-nav` added) is written up in `docs/tasks/app-ui-state.md` under "Why".
+- **`Action::Op(char)` is a convention-enforced invariant (follow-up to
+  app-ui-state)**: unlike `Digit` (private field, unconstructable when invalid),
+  `Op(char)` can hold any `char` — the "only `+ - * /`" contract lives in the
+  `from_key`/`from_label` resolvers, not the type. Safe today because those two
+  resolvers are the only construction path, but `Action::label()`'s `Op(_) =>
+  "-"` arm would render a stray operator silently. A future `enum Op { Add, Sub,
+  Mul, Div }` would make `label()` exhaustive and the invariant structural;
+  deferred because the evaluator consumes the raw `char` (real churn) and it
+  can't trigger today. Surfaced by the type-design review during `/ship`.
+- **Unified `Msg` enum (follow-up to app-ui-state)**: considered and deferred
+  (option B). The keyboard handling in `main.rs` could collapse to one total
+  `fn from_key(KeyEvent) -> Option<Msg>` where `enum Msg { Apply(Action),
+  MoveFocus(i32,i32), ActivateFocused, Quit }` spans all three subsystems
+  (App / UiState / lifecycle) — the Elm-style "message" pattern. We chose option
+  A instead (keep `Action` as the pure `App`-only alphabet; let `main.rs` route
+  events to the right subsystem) to keep `action.rs` crossterm-free and stay in
+  scope. Revisit if the event routing in `handle_event` grows more cases.
 
 ## Next Task
 
+Both **paste-input** and **copy-clipboard** are unblocked.
+
 **paste-input** — paste a whole expression via bracketed paste. The event loop
 already discards `Event::Paste` as a no-op (`handle_event` only matches `Key` and
-`Mouse`); this task adds a `Paste(String)` arm that feeds each character through
-the same label-mapping path the keyboard uses.
+`Mouse`); this task adds an `Event::Paste(String)` arm that runs each character
+through `Action::from_key` → `app.apply` — the same typed boundary the keyboard
+now uses, so no per-character flash/focus churn unless desired.

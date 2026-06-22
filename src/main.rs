@@ -1,6 +1,8 @@
+mod action;
 mod app;
 mod eval;
 mod ui;
+mod ui_state;
 
 use std::io::{self, Result, Stdout};
 use std::time::Duration;
@@ -16,7 +18,9 @@ use crossterm::terminal::{
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 
-use app::{App, BUTTONS};
+use action::Action;
+use app::App;
+use ui_state::{BUTTONS, UiState};
 
 type Tui = Terminal<CrosstermBackend<Stdout>>;
 
@@ -50,14 +54,14 @@ fn install_panic_hook() {
     }));
 }
 
-fn run(terminal: &mut Tui, app: &mut App) -> Result<()> {
+fn run(terminal: &mut Tui, app: &mut App, ui: &mut UiState) -> Result<()> {
     while !app.should_quit {
         // Expire any press flash before drawing; the 100ms poll below paces
         // this, so a flash clears ~1-2 ticks after the key (a brief blink).
-        app.tick();
-        terminal.draw(|frame| ui::draw(frame, app))?;
+        ui.tick();
+        terminal.draw(|frame| ui::draw(frame, app, ui))?;
         if event::poll(Duration::from_millis(100))? {
-            handle_event(event::read()?, app);
+            handle_event(event::read()?, app, ui);
         }
     }
     Ok(())
@@ -68,15 +72,16 @@ fn run(terminal: &mut Tui, app: &mut App) -> Result<()> {
 /// Navigation (HJKL / arrows) moves the grid focus. Every key that *activates*
 /// a button goes through `activate`, so focus follows the input and the button
 /// flashes — keyboard, the button grid, and (later) the mouse share one path.
-fn handle_event(event: Event, app: &mut App) {
+fn handle_event(event: Event, app: &mut App, ui: &mut UiState) {
     // A left-click resolves to a grid cell (if any) and activates it through the
     // same funnel as the keyboard, so the click gets focus-follow and the press
     // flash. Clicks that miss every button are ignored.
     if let Event::Mouse(mouse) = event {
         if let MouseEventKind::Down(MouseButton::Left) = mouse.kind
-            && let Some((r, c)) = app.button_at(mouse.column, mouse.row)
+            && let Some((r, c)) = ui.button_at(mouse.column, mouse.row)
+            && let Some(action) = Action::from_label(BUTTONS[r][c])
         {
-            activate(app, BUTTONS[r][c]);
+            activate(app, ui, action);
         }
         return;
     }
@@ -97,33 +102,50 @@ fn handle_event(event: Event, app: &mut App) {
             .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
             && let Some((dr, dc)) = focus_delta(key.code)
         {
-            app.move_focus(dr, dc);
+            ui.move_focus(dr, dc);
             return;
         }
         match key.code {
             KeyCode::Char('q') | KeyCode::Esc => app.should_quit = true,
             // Space activates whatever is focused, leaving focus put so it can
-            // be re-pressed in place.
-            KeyCode::Char(' ') => activate(app, app.focused_label()),
-            // Enter always evaluates (pressing "=" *is* evaluate); focus snaps
-            // to "=" to match. Backspace likewise routes through its label.
-            KeyCode::Enter => activate(app, "="),
-            KeyCode::Backspace => activate(app, "⌫"),
-            KeyCode::Char(ch) => {
-                if let Some(label) = key_char_to_label(ch) {
-                    activate(app, label);
+            // be re-pressed in place. The focused cell is always a real grid
+            // label, so `from_label` resolves it.
+            KeyCode::Char(' ') => {
+                if let Some(action) = Action::from_label(ui.focused_label()) {
+                    activate(app, ui, action);
                 }
             }
-            _ => {}
+            // Everything else that maps to a calculator action — digits/operators,
+            // plus Enter and Backspace — goes through the single keyboard map.
+            _ => {
+                if let Some(action) = key_to_action(key.code) {
+                    activate(app, ui, action);
+                }
+            }
         }
     }
 }
 
-/// Press a button by `label`, then make focus follow it and flash it. The
-/// single funnel for every activation so feedback is uniform across inputs.
-fn activate(app: &mut App, label: &str) {
-    app.press_button(label);
-    app.register_press(label);
+/// Apply an `action`, then make focus follow it and flash its cell. The single
+/// funnel for every activation so feedback is uniform across keyboard, grid,
+/// and mouse. `action.label()` names the grid cell to flash.
+fn activate(app: &mut App, ui: &mut UiState, action: Action) {
+    app.apply(action);
+    ui.register_press(action.label());
+}
+
+/// The single keyboard → [`Action`] map. Printable characters resolve via
+/// [`Action::from_key`]; Enter and Backspace are handled here because they
+/// arrive as their own `KeyCode`s, not as chars. Returns `None` for keys with
+/// no calculator action (navigation, Space, quit) — those are routed before
+/// this is reached.
+fn key_to_action(code: KeyCode) -> Option<Action> {
+    match code {
+        KeyCode::Enter => Some(Action::Equals),
+        KeyCode::Backspace => Some(Action::Backspace),
+        KeyCode::Char(ch) => Action::from_key(ch),
+        _ => None,
+    }
 }
 
 /// Maps a navigation key to a `(row_delta, col_delta)` focus move. Accepts both
@@ -138,41 +160,12 @@ fn focus_delta(code: KeyCode) -> Option<(i32, i32)> {
     }
 }
 
-/// Translates a typed character into the button-grid label `press_button`
-/// expects, or `None` for keys with no calculator action.
-///
-/// Most keys map to their own label 1:1. The interesting cases are where the
-/// keyboard's ASCII alphabet diverges from the grid's display glyphs.
-fn key_char_to_label(ch: char) -> Option<&'static str> {
-    match ch {
-        '0' => Some("0"),
-        '1' => Some("1"),
-        '2' => Some("2"),
-        '3' => Some("3"),
-        '4' => Some("4"),
-        '5' => Some("5"),
-        '6' => Some("6"),
-        '7' => Some("7"),
-        '8' => Some("8"),
-        '9' => Some("9"),
-        '.' => Some("."),
-        '*' => Some("×"),
-        '/' => Some("÷"),
-        '+' => Some("+"),
-        '-' => Some("-"),
-        '(' => Some("("),
-        ')' => Some(")"),
-        '=' => Some("="),
-        'c' | 'C' => Some("C"),
-        _ => None,
-    }
-}
-
 fn main() -> Result<()> {
     install_panic_hook();
     let mut terminal = setup_terminal()?;
     let mut app = App::new();
-    let result = run(&mut terminal, &mut app);
+    let mut ui = UiState::new();
+    let result = run(&mut terminal, &mut app, &mut ui);
     restore_terminal(&mut terminal)?;
     result
 }
@@ -183,23 +176,19 @@ mod tests {
     use crossterm::event::KeyEvent;
 
     #[test]
-    fn key_maps_ascii_operators_to_glyphs() {
-        // The crux: keyboard ASCII `*`/`/` become the grid's display glyphs,
-        // which are the only labels press_button recognizes as multiply/divide.
-        assert_eq!(key_char_to_label('*'), Some("×"));
-        assert_eq!(key_char_to_label('/'), Some("÷"));
+    fn key_to_action_maps_enter_and_backspace() {
+        // Enter and Backspace arrive as their own KeyCodes (not chars), so the
+        // keyboard map handles them directly: Enter evaluates, Backspace deletes.
+        assert_eq!(key_to_action(KeyCode::Enter), Some(Action::Equals));
+        assert_eq!(key_to_action(KeyCode::Backspace), Some(Action::Backspace));
     }
 
     #[test]
-    fn key_maps_passthrough_and_control_chars() {
-        assert_eq!(key_char_to_label('7'), Some("7"));
-        assert_eq!(key_char_to_label('.'), Some("."));
-        assert_eq!(key_char_to_label('+'), Some("+"));
-        assert_eq!(key_char_to_label('('), Some("("));
-        assert_eq!(key_char_to_label('='), Some("="));
-        // Clear is case-insensitive so Shift doesn't matter.
-        assert_eq!(key_char_to_label('c'), Some("C"));
-        assert_eq!(key_char_to_label('C'), Some("C"));
+    fn key_to_action_delegates_chars_to_from_key() {
+        // Printable chars defer to Action::from_key (covered exhaustively in
+        // action.rs); this just checks the delegation is wired up.
+        assert_eq!(key_to_action(KeyCode::Char('5')), Action::from_key('5'));
+        assert_eq!(key_to_action(KeyCode::Char('*')), Some(Action::Op('*')));
     }
 
     #[test]
@@ -230,12 +219,14 @@ mod tests {
     fn bare_nav_key_moves_focus() {
         // Sanity baseline for the modifier gate below: an unmodified nav key
         // still navigates.
-        let mut app = App::new(); // focus starts on "=" at (4, 3)
+        let mut app = App::new();
+        let mut ui = UiState::new(); // focus starts on "=" at (4, 3)
         handle_event(
             Event::Key(KeyEvent::new(KeyCode::Char('h'), KeyModifiers::NONE)),
             &mut app,
+            &mut ui,
         );
-        assert_eq!(app.focus, (4, 2)); // moved left
+        assert!(ui.is_focused((4, 2))); // moved left
     }
 
     #[test]
@@ -243,19 +234,23 @@ mod tests {
         // Ctrl-H (and friends) must not be swallowed as "move focus left" — the
         // Ctrl/Alt gate lets control chords keep their terminal meaning. Here
         // Ctrl-H has no calculator action, so focus must stay put.
-        let mut app = App::new(); // focus at (4, 3)
+        let mut app = App::new();
+        let mut ui = UiState::new(); // focus at (4, 3)
         handle_event(
             Event::Key(KeyEvent::new(KeyCode::Char('h'), KeyModifiers::CONTROL)),
             &mut app,
+            &mut ui,
         );
-        assert_eq!(app.focus, (4, 3)); // unchanged
+        assert!(ui.is_focused((4, 3))); // unchanged
     }
 
     #[test]
-    fn key_with_no_action_returns_none() {
-        // Guards the catch-all: unmapped keys must be inert, not panic or
-        // accidentally fall into another arm.
-        assert_eq!(key_char_to_label('z'), None);
-        assert_eq!(key_char_to_label('q'), None); // quit is handled in handle_event, not here
+    fn key_to_action_ignores_non_action_keys() {
+        // Navigation, Space, and quit keys have no calculator action — they're
+        // routed before key_to_action is reached, so it returns None for them.
+        assert_eq!(key_to_action(KeyCode::Left), None);
+        assert_eq!(key_to_action(KeyCode::Char(' ')), None);
+        assert_eq!(key_to_action(KeyCode::Char('q')), None);
+        assert_eq!(key_to_action(KeyCode::Esc), None);
     }
 }
