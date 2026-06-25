@@ -51,6 +51,26 @@ impl App {
         }
     }
 
+    /// Apply a pasted string by routing each character through the same typed
+    /// boundary the keyboard uses ([`Action::from_key`]) and feeding the result
+    /// to [`apply`] — the calculator's single "ingest a string" entry point.
+    ///
+    /// Best-effort and per-character, not expression-validated: each char is
+    /// applied in sequence, and any that [`Action::from_key`] doesn't recognize
+    /// (spaces, letters, newlines) is silently skipped — the same no-op the
+    /// keyboard gives an unmapped key. A large paste may arrive split across
+    /// several `Event::Paste`s; each is applied statefully, so the outcome is
+    /// the same as a single event.
+    ///
+    /// [`apply`]: App::apply
+    pub fn apply_str(&mut self, s: &str) {
+        for ch in s.chars() {
+            if let Some(action) = Action::from_key(ch) {
+                self.apply(action);
+            }
+        }
+    }
+
     /// True in either post-`=` state. These share the "input starts fresh"
     /// behavior; callers branch on the specific variant where they differ.
     fn is_post_eval(&self) -> bool {
@@ -526,6 +546,89 @@ mod tests {
             press(&mut app, b);
         }
         assert_eq!(app.display_lines().1, "0");
+    }
+
+    // --- paste ---
+
+    #[test]
+    fn paste_builds_expression() {
+        // A whole expression pasted at once lands the same as typing it: the
+        // last number is still in `current`, the rest committed to `expr`.
+        let mut app = App::new();
+        app.apply_str("78-65*5");
+        assert_eq!(app.display_lines().1, "78-65×5");
+        assert_eq!(app.current, "5");
+        assert!(matches!(app.mode, Mode::Editing));
+    }
+
+    #[test]
+    fn paste_skips_whitespace_and_unmapped_chars() {
+        // Spaces and stray letters resolve to `None` in `from_key`, so they're
+        // dropped — a spaced "78 - 65" pastes identically to "78-65".
+        let mut spaced = App::new();
+        spaced.apply_str("78 - 65");
+        assert_eq!(spaced.display_lines().1, "78-65");
+
+        let mut junk = App::new();
+        junk.apply_str("7a8");
+        assert_eq!(junk.current, "78");
+    }
+
+    #[test]
+    fn paste_with_trailing_equals_evaluates() {
+        // `=` flows through the same boundary, so a pasted expression ending in
+        // `=` evaluates in one event — no separate keypress needed.
+        let mut app = App::new();
+        app.apply_str("2+2=");
+        assert_eq!(app.expr, vec![Token::Number(4.0)]);
+        assert_eq!(app.display_lines().1, "4");
+        assert!(matches!(app.mode, Mode::Evaluated(_)));
+    }
+
+    #[test]
+    fn paste_after_result_starts_fresh() {
+        // Pasting a digit after `=` hits the same post-eval reset as typing one,
+        // because each char still routes through `apply`.
+        let mut app = App::new();
+        app.apply_str("5+3=");
+        app.apply_str("9");
+        assert_eq!(app.current, "9");
+        assert!(app.expr.is_empty());
+        assert!(matches!(app.mode, Mode::Editing));
+    }
+
+    #[test]
+    fn paste_parens_and_decimals_evaluate() {
+        // The headline paste case: a real expression with parens and decimals,
+        // evaluated. Exercises the `(`, `)`, and `.` glyphs through the paste
+        // boundary — none of the other paste tests reach those.
+        let mut app = App::new();
+        app.apply_str("(1.5+2.5)*2=");
+        assert_eq!(app.expr, vec![Token::Number(8.0)]);
+        assert_eq!(app.display_lines().1, "8");
+    }
+
+    #[test]
+    fn paste_into_existing_expression_continues() {
+        // Paste usually lands on top of input already on screen. `apply_str`
+        // must not reset: typing 78 then pasting "*5" continues to 78×5.
+        let mut app = App::new();
+        press(&mut app, "7");
+        press(&mut app, "8");
+        app.apply_str("*5");
+        assert_eq!(app.expr, vec![Token::Number(78.0), Token::Op('*')]);
+        assert_eq!(app.current, "5");
+        assert_eq!(app.display_lines().1, "78×5");
+    }
+
+    #[test]
+    fn paste_skips_newlines() {
+        // Clipboard text often carries a newline (copying "1+1" from a code
+        // block grabs the trailing \n). `\n` resolves to None in from_key, so
+        // it's dropped just like a space — the paste reads as if joined.
+        let mut app = App::new();
+        app.apply_str("1+1\n2");
+        assert_eq!(app.display_lines().1, "1+12");
     }
 
     #[test]

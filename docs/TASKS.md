@@ -12,5 +12,5 @@
 [x] key-input: Direct keyboard input handling
 [x] button-nav: Button navigation with HJKL/arrows
 [x] mouse-input: Mouse click support
-[ ] paste-input: Paste a whole expression via bracketed paste
+[x] paste-input: Paste a whole expression via bracketed paste
 [ ] copy-clipboard: Copy result to system clipboard
