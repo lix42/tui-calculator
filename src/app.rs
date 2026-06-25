@@ -51,12 +51,20 @@ impl App {
         }
     }
 
-    /// Apply a pasted string by routing each character through the same typed
-    /// boundary the keyboard uses ([`Action::from_key`]) and feeding the result
-    /// to [`apply`] — the calculator's single "ingest a string" entry point.
+    /// Apply a pasted string by routing each character through
+    /// [`Action::from_label`] and feeding the result to [`apply`] — the
+    /// calculator's single "ingest a string" entry point.
+    ///
+    /// Resolving via `from_label` (the display-glyph boundary), *not*
+    /// `from_key` (keyboard ASCII), is deliberate: text copied out of the
+    /// display carries the glyphs the calculator renders — `×` and `÷` — so a
+    /// copied expression pasted back round-trips instead of having its
+    /// operators silently dropped. `from_label` maps those two glyphs and
+    /// delegates every other character to `from_key`, so ASCII `*`/`/` and the
+    /// rest still resolve. Glyph knowledge stays solely in `action.rs`.
     ///
     /// Best-effort and per-character, not expression-validated: each char is
-    /// applied in sequence, and any that [`Action::from_key`] doesn't recognize
+    /// applied in sequence, and any that `from_label` doesn't recognize
     /// (spaces, letters, newlines) is silently skipped — the same no-op the
     /// keyboard gives an unmapped key. A large paste may arrive split across
     /// several `Event::Paste`s; each is applied statefully, so the outcome is
@@ -64,8 +72,11 @@ impl App {
     ///
     /// [`apply`]: App::apply
     pub fn apply_str(&mut self, s: &str) {
+        // `from_label` takes a `&str`; render each char into a stack buffer so
+        // there's no per-char heap allocation.
+        let mut buf = [0u8; 4];
         for ch in s.chars() {
-            if let Some(action) = Action::from_key(ch) {
+            if let Some(action) = Action::from_label(ch.encode_utf8(&mut buf)) {
                 self.apply(action);
             }
         }
@@ -562,8 +573,24 @@ mod tests {
     }
 
     #[test]
+    fn paste_display_glyphs_round_trip() {
+        // Text copied from the calculator's own display carries the `×`/`÷`
+        // glyphs, not ASCII `*`/`/`. Pasting it back must evaluate correctly:
+        // `apply_str` resolves via `from_label`, which maps the glyphs. (With
+        // `from_key`, `×` was dropped and `78-65×5` mis-parsed as `78-655`.)
+        let mut app = App::new();
+        app.apply_str("78-65×5=");
+        assert_eq!(app.expr, vec![Token::Number(-247.0)]);
+        assert_eq!(app.display_lines().1, "-247");
+
+        let mut div = App::new();
+        div.apply_str("84÷2=");
+        assert_eq!(div.display_lines().1, "42");
+    }
+
+    #[test]
     fn paste_skips_whitespace_and_unmapped_chars() {
-        // Spaces and stray letters resolve to `None` in `from_key`, so they're
+        // Spaces and stray letters resolve to `None` in `from_label`, so they're
         // dropped — a spaced "78 - 65" pastes identically to "78-65".
         let mut spaced = App::new();
         spaced.apply_str("78 - 65");

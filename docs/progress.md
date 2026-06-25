@@ -253,7 +253,7 @@ Key implementation details:
   `draw_buttons(&mut UiState)`.
 
 ### paste-input — `src/main.rs`, `src/app.rs`
-Paste a whole expression via bracketed paste. 7 new unit tests (58 total), all
+Paste a whole expression via bracketed paste. 8 new unit tests (59 total), all
 passing.
 
 Key implementation details:
@@ -271,11 +271,20 @@ Key implementation details:
   project never sets `default-features = false`, so it was compiled in all along
   (`cargo tree -e features` confirms it active, also via `ratatui-crossterm`).
 - **`App::apply_str(&str)`** is the single "ingest a string" entry point: it
-  loops `s.chars()`, resolves each through `Action::from_key`, and feeds the
+  loops `s.chars()`, resolves each through `Action::from_label`, and feeds the
   `Some` case to `apply`. Chars with no calculator meaning (spaces, stray
   letters) resolve to `None` and are skipped — so `"78 - 65"` pastes as `78-65`.
-  The skip policy lives entirely in `from_key`; `apply_str` and the `main.rs`
-  paste arm are both ignorant of which chars are valid (single source of truth).
+  The valid-char policy lives entirely in `action.rs`; `apply_str` and the
+  `main.rs` paste arm are both ignorant of which chars are valid (single source
+  of truth).
+- **Resolves via `from_label`, not `from_key`** (fix from PR review): paste uses
+  the *display-glyph* boundary, not keyboard ASCII, so an expression copied out
+  of the display (which renders `×`/`÷`, not `*`/`/`) pastes back and round-trips
+  instead of having its operators silently dropped — `78-65×5` had mis-parsed as
+  `78-655`. `from_label` maps the two glyphs and delegates everything else to
+  `from_key`, so ASCII input still resolves. Chosen over an inline `×`→`*`
+  normalize table (the reviewer's suggestion) because that would duplicate glyph
+  knowledge `from_label` already owns. Test: `paste_display_glyphs_round_trip`.
 - Because every char goes through the same `apply` the keyboard uses, post-`=`
   reset, operator precedence, and a trailing `=` (which evaluates) all come for
   free — `"2+2="` evaluates in one event. No reimplemented calculator logic.
