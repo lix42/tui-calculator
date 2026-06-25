@@ -252,6 +252,46 @@ Key implementation details:
 - **`ui.rs`** — `draw` takes `&App` + `&mut UiState`; `draw_display(&App)`,
   `draw_buttons(&mut UiState)`.
 
+### paste-input — `src/main.rs`, `src/app.rs`
+Paste a whole expression via bracketed paste. 8 new unit tests (59 total), all
+passing.
+
+Key implementation details:
+- **Bracketed paste had to be enabled first.** `Event::Paste` only fires when
+  the terminal is in bracketed-paste mode; `setup_terminal` previously enabled
+  only `EnterAlternateScreen` + `EnableMouseCapture`, so paste events never
+  arrived (an earlier note here that the loop "already discards `Event::Paste`"
+  was true of the match but moot in practice). `EnableBracketedPaste` is now
+  threaded through all three lifecycle points alongside mouse capture:
+  `setup_terminal` (enable), `restore_terminal` (disable, ordered *before*
+  `LeaveAlternateScreen`), and `install_panic_hook` (disable on panic). **No
+  `Cargo.toml` change was needed** (contra this task's old plan note): the
+  `EnableBracketedPaste`/`Event::Paste` API is `#[cfg(feature =
+  "bracketed-paste")]`-gated, but that feature is a crossterm *default* and the
+  project never sets `default-features = false`, so it was compiled in all along
+  (`cargo tree -e features` confirms it active, also via `ratatui-crossterm`).
+- **`App::apply_str(&str)`** is the single "ingest a string" entry point: it
+  loops `s.chars()`, resolves each through `Action::from_label`, and feeds the
+  `Some` case to `apply`. Chars with no calculator meaning (spaces, stray
+  letters) resolve to `None` and are skipped — so `"78 - 65"` pastes as `78-65`.
+  The valid-char policy lives entirely in `action.rs`; `apply_str` and the
+  `main.rs` paste arm are both ignorant of which chars are valid (single source
+  of truth).
+- **Resolves via `from_label`, not `from_key`** (fix from PR review): paste uses
+  the *display-glyph* boundary, not keyboard ASCII, so an expression copied out
+  of the display (which renders `×`/`÷`, not `*`/`/`) pastes back and round-trips
+  instead of having its operators silently dropped — `78-65×5` had mis-parsed as
+  `78-655`. `from_label` maps the two glyphs and delegates everything else to
+  `from_key`, so ASCII input still resolves. Chosen over an inline `×`→`*`
+  normalize table (the reviewer's suggestion) because that would duplicate glyph
+  knowledge `from_label` already owns. Test: `paste_display_glyphs_round_trip`.
+- Because every char goes through the same `apply` the keyboard uses, post-`=`
+  reset, operator precedence, and a trailing `=` (which evaluates) all come for
+  free — `"2+2="` evaluates in one event. No reimplemented calculator logic.
+- **`handle_event`** gains an `Event::Paste(text)` arm that calls
+  `app.apply_str(&text)` and `return`s. It deliberately bypasses `activate`, so
+  a paste is one logical edit — no per-character focus move or press flash.
+
 ## Known Issues / Deferred
 
 - **`Action::Op(char)` is a convention-enforced invariant (follow-up to
@@ -274,10 +314,8 @@ Key implementation details:
 
 ## Next Task
 
-Both **paste-input** and **copy-clipboard** are unblocked.
-
-**paste-input** — paste a whole expression via bracketed paste. The event loop
-already discards `Event::Paste` as a no-op (`handle_event` only matches `Key` and
-`Mouse`); this task adds an `Event::Paste(String)` arm that runs each character
-through `Action::from_key` → `app.apply` — the same typed boundary the keyboard
-now uses, so no per-character flash/focus churn unless desired.
+**copy-clipboard** is the last remaining task — copy the result to the system
+clipboard. The `arboard` dependency is already in `Cargo.toml` but unused. Worth
+a focused pass on its own: `arboard` has real platform quirks (e.g. X11
+clipboard ownership on Linux is tied to process lifetime), so this is more than
+a one-liner despite the dep already being present.

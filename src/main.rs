@@ -8,8 +8,8 @@ use std::io::{self, Result, Stdout};
 use std::time::Duration;
 
 use crossterm::event::{
-    self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers,
-    MouseButton, MouseEventKind,
+    self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
+    Event, KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind,
 };
 use crossterm::execute;
 use crossterm::terminal::{
@@ -27,14 +27,21 @@ type Tui = Terminal<CrosstermBackend<Stdout>>;
 fn setup_terminal() -> Result<Tui> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+    execute!(
+        stdout,
+        EnterAlternateScreen,
+        EnableMouseCapture,
+        EnableBracketedPaste
+    )?;
     Terminal::new(CrosstermBackend::new(stdout))
 }
 
 fn restore_terminal(terminal: &mut Tui) -> Result<()> {
-    // Reverse of setup: drop mouse capture *before* leaving alt screen.
+    // Reverse of setup: drop mouse capture and bracketed paste *before* leaving
+    // alt screen.
     execute!(
         terminal.backend_mut(),
+        DisableBracketedPaste,
         DisableMouseCapture,
         LeaveAlternateScreen
     )?;
@@ -48,7 +55,12 @@ fn restore_terminal(terminal: &mut Tui) -> Result<()> {
 fn install_panic_hook() {
     let original = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
-        let _ = execute!(io::stdout(), DisableMouseCapture, LeaveAlternateScreen);
+        let _ = execute!(
+            io::stdout(),
+            DisableBracketedPaste,
+            DisableMouseCapture,
+            LeaveAlternateScreen
+        );
         let _ = disable_raw_mode();
         original(info);
     }));
@@ -83,6 +95,14 @@ fn handle_event(event: Event, app: &mut App, ui: &mut UiState) {
         {
             activate(app, ui, action);
         }
+        return;
+    }
+    // A bracketed paste arrives as one (or, for large pastes, more than one)
+    // `Event::Paste` carrying the pasted text. It routes through
+    // `App::apply_str`, not `activate`, so the paste is one logical edit — no
+    // per-character focus move or press flash.
+    if let Event::Paste(text) = event {
+        app.apply_str(&text);
         return;
     }
     if let Event::Key(key) = event
