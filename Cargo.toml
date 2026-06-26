@@ -7,4 +7,7 @@ description = "A TUI calculator built with Ratatui"
 [dependencies]
 ratatui = "0.30"
 crossterm = { version = "0.29", features = ["event-stream"] }
-arboard = "3"
+# `wayland-data-control` adds the Wayland clipboard backend; arboard's default
+# Linux backend only covers X11/XWayland, so pure-Wayland sessions need it. The
+# feature's deps are Linux-gated upstream, so it's a no-op on macOS/Windows.
+arboard = { version = "3", features = ["wayland-data-control"] }

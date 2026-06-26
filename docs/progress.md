@@ -292,6 +292,61 @@ Key implementation details:
   `app.apply_str(&text)` and `return`s. It deliberately bypasses `activate`, so
   a paste is one logical edit — no per-character focus move or press flash.
 
+### copy-clipboard — `src/app.rs`, `src/ui_state.rs`, `src/ui.rs`, `src/main.rs`
+Copy the result to the system clipboard via a `[y Copy]` display-box affordance.
+6 new unit tests (65 total), all passing.
+
+Key implementation details:
+- **Copy is deliberately not an `Action`.** It's a side-effecting command on the
+  *result*, not a calculator state transition, so adding it to the `Action` enum
+  would either break `App::apply`'s total, catch-all-free match (a `Copy => {}`
+  no-op arm is a lie) or put clipboard I/O into the crossterm-free `action.rs`.
+  Instead it's routed in `main.rs` next to quit/focus-moves — the same "not an
+  `App` action, handled at the I/O boundary" tier the deferred-`Msg`-enum note
+  below describes. The grid (`BUTTONS`) stays a fixed `static const`; the
+  affordance lives in the display area, so no grid/focus/hit-test code became
+  dynamic.
+- **`App::copy_text() -> Option<String>`** is the single source for both "is
+  there something to copy?" and "what to copy": `Some(display_string(...))` only
+  in `Mode::Evaluated`, `None` in `Editing`/`Error`. The UI reads `is_some()` to
+  decide whether to draw the affordance, so it auto-dismisses the instant new
+  input leaves `Evaluated` (a fresh digit → `Editing` → `None`). An error
+  message is never copyable.
+- **`UiState`** gained `copy_rect` (captured each draw like `button_rects`;
+  `set_copy_rect` / `copy_hit` for click hit-testing — `Rect::ZERO` when hidden,
+  and zero-area rects contain no point, so `copy_hit` is false then) and a
+  transient `status: Option<(String, Instant)>` (`set_status` / `status_text`).
+  It's an owned `String`, not `&'static str`, so a failure carries the real
+  `arboard` error detail — a TUI has no log, so the status line is the only place
+  the cause can surface. The existing `tick` expires it after `STATUS_DURATION`
+  (1500ms) — much longer than the 120ms `FLASH_DURATION` because the message is
+  text to *read*, not a blink.
+- **`ui.rs`**: `draw_display` now takes `&mut UiState`. `draw_copy_affordance`
+  renders the live status (which wins) or else `[y Copy]` when copyable,
+  left-aligned in the display's top row, and returns the column width to reserve.
+  `draw_display` shrinks the right-aligned expression's area by that width so a
+  long expression can't render over the persistent hint. The status reserves
+  `0` (it's momentary post-action feedback and may use the whole row), so it can
+  briefly overlap the dim expression — acceptable. Only the hint is clickable;
+  the status is feedback, not a target. `COPY_HINT` is ASCII, so `str::len()` is
+  its render width / clickable-rect width.
+- **`main.rs`**: `y`/`Y` (vim-yank; `Ctrl+C` is taken by quit in raw mode) and a
+  left-click on `copy_hit` both route to `do_copy`, which calls
+  `copy_to_clipboard` (one-shot `arboard::Clipboard::new()?.set_text(text)`) and
+  sets the status to `Copied!` or `Copy failed: {e}` (the real `arboard::Error`
+  via `Display` — `no clipboard` on headless/SSH is permanent, `clipboard busy`
+  is transient, and they want different responses). The mouse arm checks
+  `copy_hit` *before* `button_at` since the affordance is outside the grid.
+- **Cross-platform**: one-shot set; persists after exit on macOS/Windows. On
+  Linux/X11 clipboard contents are tied to process lifetime, so a copy may not
+  survive exit without a clipboard manager — documented as a code comment, not
+  handled (chosen scope; dev is on macOS).
+- The actual clipboard write isn't unit-tested (it touches the system
+  clipboard), but `do_copy`'s no-op guard *is*: `do_copy_is_noop_without_a_result`
+  drives the `copy_text() == None` path, which returns before the clipboard call,
+  so it sets no status. `copy_text` (the decision) is fully covered. The success
+  status path is verified manually per the task's test steps.
+
 ## Known Issues / Deferred
 
 - **`Action::Op(char)` is a convention-enforced invariant (follow-up to

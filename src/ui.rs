@@ -12,7 +12,7 @@ pub fn draw(frame: &mut Frame, app: &App, ui: &mut UiState) {
     let [display_area, button_area] =
         Layout::vertical([Constraint::Length(4), Constraint::Length(25)]).areas(panel);
 
-    draw_display(frame, app, display_area);
+    draw_display(frame, app, ui, display_area);
     draw_buttons(frame, ui, button_area);
 }
 
@@ -32,7 +32,7 @@ fn centered_panel(area: Rect, width: u16, height: u16) -> Rect {
     panel
 }
 
-fn draw_display(frame: &mut Frame, app: &App, area: Rect) {
+fn draw_display(frame: &mut Frame, app: &App, ui: &mut UiState, area: Rect) {
     let display_block = Block::bordered().padding(Padding::horizontal(1));
     let inner = display_block.inner(area);
     frame.render_widget(display_block, area);
@@ -41,8 +41,79 @@ fn draw_display(frame: &mut Frame, app: &App, area: Rect) {
         Layout::vertical([Constraint::Fill(1), Constraint::Fill(1)]).areas(inner);
 
     let (top, bottom) = app.display_lines();
-    frame.render_widget(Line::from(top).right_aligned().dim(), top_area);
+
+    // The affordance occupies the top row's left edge; reserve those columns so a
+    // long right-aligned expression can't render over the persistent hint. The
+    // expression is drawn *first*, then the affordance on top, so a momentary
+    // status ("Copied!") — which reserves nothing — always wins over the
+    // expression instead of being overwritten by a long one.
+    let reserved = copy_affordance_width(app, ui, top_area);
+    let expr_area = Rect {
+        x: top_area.x + reserved,
+        width: top_area.width.saturating_sub(reserved),
+        ..top_area
+    };
+    frame.render_widget(Line::from(top).right_aligned().dim(), expr_area);
+    draw_copy_affordance(frame, app, ui, top_area);
     frame.render_widget(Line::from(bottom).right_aligned().bold(), bottom_area);
+}
+
+/// The label shown when a result is copyable. The leading `y` mirrors the key
+/// that triggers the copy; its width sets the clickable hit-area. ASCII, so
+/// `len()` equals its rendered column width.
+const COPY_HINT: &str = "[y Copy]";
+
+/// Renders the copy affordance (or the transient status message) left-aligned in
+/// the top-left of the display. Drawn *after* the expression (see `draw_display`)
+/// so a live status paints on top of it.
+///
+/// Three states:
+/// - a live status ("Copied!"/"Copy failed: …") wins while it lasts. It reserves
+///   no columns (see `copy_affordance_width`) but is drawn last, so it overlays
+///   the dim expression — momentary feedback right after the user acted, and a
+///   long error message is free to use the whole row rather than shrink the
+///   result.
+/// - else the `[y Copy]` hint shows whenever the result is copyable, and its
+///   width *is* reserved so the expression never overlaps it. Only the hint is
+///   clickable, so it's the only state that records a non-zero `copy_rect`.
+/// - else nothing; rect cleared.
+fn draw_copy_affordance(frame: &mut Frame, app: &App, ui: &mut UiState, top_area: Rect) {
+    if let Some(status) = ui.status_text() {
+        frame.render_widget(Line::from(status).left_aligned().cyan(), top_area);
+        ui.set_copy_rect(Rect::ZERO);
+    } else if app.copy_text().is_some() {
+        let rect = left_rect(top_area, COPY_HINT.len());
+        frame.render_widget(Line::from(COPY_HINT).left_aligned().dim(), rect);
+        ui.set_copy_rect(rect);
+    } else {
+        ui.set_copy_rect(Rect::ZERO);
+    }
+}
+
+/// The column width the right-aligned expression must keep clear at the top-left,
+/// mirroring the states in `draw_copy_affordance`. Only the persistent `[y Copy]`
+/// hint reserves space; a live status reserves nothing (it overlays the
+/// expression), and so does the empty state. Read by `draw_display` *before* the
+/// expression is rendered, so it can't borrow `ui` mutably — hence a separate
+/// read-only pass rather than a value returned from the draw.
+fn copy_affordance_width(app: &App, ui: &UiState, top_area: Rect) -> u16 {
+    if ui.status_text().is_some() {
+        0
+    } else if app.copy_text().is_some() {
+        left_rect(top_area, COPY_HINT.len()).width
+    } else {
+        0
+    }
+}
+
+/// A `width`-wide, single-row rect anchored at the left of `area`, clamped to
+/// `area`'s width so it never overflows the display box.
+fn left_rect(area: Rect, width: usize) -> Rect {
+    Rect {
+        width: (width as u16).min(area.width),
+        height: 1,
+        ..area
+    }
 }
 
 fn draw_buttons(frame: &mut Frame, ui: &mut UiState, area: Rect) {

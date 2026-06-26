@@ -89,11 +89,16 @@ fn handle_event(event: Event, app: &mut App, ui: &mut UiState) {
     // same funnel as the keyboard, so the click gets focus-follow and the press
     // flash. Clicks that miss every button are ignored.
     if let Event::Mouse(mouse) = event {
-        if let MouseEventKind::Down(MouseButton::Left) = mouse.kind
-            && let Some((r, c)) = ui.button_at(mouse.column, mouse.row)
-            && let Some(action) = Action::from_label(BUTTONS[r][c])
-        {
-            activate(app, ui, action);
+        if let MouseEventKind::Down(MouseButton::Left) = mouse.kind {
+            // The copy affordance sits in the display area, outside the grid, so
+            // it's checked before the button hit-test.
+            if ui.copy_hit(mouse.column, mouse.row) {
+                do_copy(app, ui);
+            } else if let Some((r, c)) = ui.button_at(mouse.column, mouse.row)
+                && let Some(action) = Action::from_label(BUTTONS[r][c])
+            {
+                activate(app, ui, action);
+            }
         }
         return;
     }
@@ -102,6 +107,9 @@ fn handle_event(event: Event, app: &mut App, ui: &mut UiState) {
     // `App::apply_str`, not `activate`, so the paste is one logical edit — no
     // per-character focus move or press flash.
     if let Event::Paste(text) = event {
+        // A paste is a fresh edit, so drop any lingering "Copied!" from the last
+        // result before it's applied.
+        ui.clear_status();
         app.apply_str(&text);
         return;
     }
@@ -127,6 +135,9 @@ fn handle_event(event: Event, app: &mut App, ui: &mut UiState) {
         }
         match key.code {
             KeyCode::Char('q') | KeyCode::Esc => app.should_quit = true,
+            // Copy the result to the clipboard (vim-style yank; Ctrl-C is taken
+            // by quit in raw mode). A no-op unless a result is on screen.
+            KeyCode::Char('y') | KeyCode::Char('Y') => do_copy(app, ui),
             // Space activates whatever is focused, leaving focus put so it can
             // be re-pressed in place. The focused cell is always a real grid
             // label, so `from_label` resolves it.
@@ -150,8 +161,67 @@ fn handle_event(event: Event, app: &mut App, ui: &mut UiState) {
 /// funnel for every activation so feedback is uniform across keyboard, grid,
 /// and mouse. `action.label()` names the grid cell to flash.
 fn activate(app: &mut App, ui: &mut UiState, action: Action) {
+    // A new activation is a fresh edit, so drop any lingering "Copied!" status
+    // before applying it — that line refers to the previous result.
+    ui.clear_status();
     app.apply(action);
     ui.register_press(action.label());
+}
+
+/// Copy the current result to the system clipboard, then show a status message.
+///
+/// Copy is *not* an [`Action`]: it's a side-effecting command on the result, not
+/// a calculator state transition, so it stays out of `App::apply`'s pure, total
+/// match (and out of the crossterm-free `action.rs`). Like quit and focus moves,
+/// it's routed here, at the I/O boundary that already owns the terminal.
+///
+/// A no-op (no status) when there's nothing to copy — `app.copy_text()` is
+/// `None` while editing or after an error, so pressing `y` then does nothing.
+fn do_copy(app: &App, ui: &mut UiState) {
+    let Some(text) = app.copy_text() else {
+        return;
+    };
+    // Carry the real error into the status: a TUI has no log, so this line is the
+    // only place the cause can surface. "no clipboard" (headless/SSH, permanent)
+    // and "clipboard busy" (transient) ask for different responses, and
+    // `arboard::Error`'s `Display` distinguishes them.
+    let status = match copy_to_clipboard(&text) {
+        Ok(()) => "Copied!".to_string(),
+        Err(e) => format!("Copy failed: {e}"),
+    };
+    ui.set_status(status);
+}
+
+thread_local! {
+    /// A clipboard handle reused for the whole session.
+    ///
+    /// On Linux (X11 and Wayland) arboard serves the copied text *from the live
+    /// `Clipboard` instance* — drop it and the contents can vanish before another
+    /// app reads them, so a fresh-per-copy handle would let `set_text` report
+    /// success while the paste silently fails. Holding one instance for the
+    /// process lifetime keeps the text available while the app runs. macOS and
+    /// Windows hand the text to the OS, so reusing the handle is simply cheaper.
+    ///
+    /// The TUI is single-threaded, so a `thread_local` is effectively a
+    /// process-global without needing `Clipboard: Sync`. Lazily built on first
+    /// copy; a failed build leaves the slot empty so the next copy retries.
+    static CLIPBOARD: std::cell::RefCell<Option<arboard::Clipboard>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Place `text` on the system clipboard, using the session-long handle above.
+///
+/// NOTE: even with a persistent handle, on Linux the text is served by this
+/// process, so it may not survive the app exiting unless a clipboard manager is
+/// running to take ownership. macOS and Windows persist it after exit.
+fn copy_to_clipboard(text: &str) -> std::result::Result<(), arboard::Error> {
+    CLIPBOARD.with_borrow_mut(|slot| {
+        if slot.is_none() {
+            *slot = Some(arboard::Clipboard::new()?);
+        }
+        // Just populated above on the `None` path, so the handle is present.
+        slot.as_mut().expect("clipboard initialized").set_text(text)
+    })
 }
 
 /// The single keyboard → [`Action`] map. Printable characters resolve via
@@ -262,6 +332,22 @@ mod tests {
             &mut ui,
         );
         assert!(ui.is_focused((4, 3))); // unchanged
+    }
+
+    #[test]
+    fn do_copy_is_noop_without_a_result() {
+        // While editing there's no result, so `copy_text` is None and `do_copy`
+        // returns before touching the clipboard — no status is set. (The success
+        // path sets a status but writes to the system clipboard, so it's verified
+        // manually rather than here.)
+        let mut app = App::new();
+        for ch in ['2', '+', '3'] {
+            app.apply(Action::from_key(ch).expect("mapped key"));
+        }
+        assert_eq!(app.copy_text(), None);
+        let mut ui = UiState::new();
+        do_copy(&app, &mut ui);
+        assert_eq!(ui.status_text(), None);
     }
 
     #[test]
