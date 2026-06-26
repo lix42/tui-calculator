@@ -86,8 +86,11 @@ that matter:
   optimistically sets the `Copied!` status (or awaits the promise to report
   failure) — it can't be the synchronous `set_text` the native path uses.
 - `copy_to_clipboard` / the `CLIPBOARD` `thread_local` in `main.rs` are native
-  concerns. Gate them: a `clipboard` module with `#[cfg(not(wasm))]` (arboard)
-  and `#[cfg(wasm)]` (web-sys) implementations behind one signature, so
+  concerns. Gate them: a `clipboard` module with
+  `#[cfg(not(target_arch = "wasm32"))]` (arboard) and
+  `#[cfg(target_arch = "wasm32")]` (web-sys) implementations behind one signature
+  (`wasm` is **not** a real Rust cfg — `not(wasm)` is always true, so it would
+  wrongly keep the native path on the web build), so
   `do_copy`/`apply_msg(Copy)` call the same function name on both targets.
 - The X11-lifetime caveat documented for the native build is irrelevant on the
   web; the web has its own constraint (gesture requirement) instead.
@@ -103,6 +106,13 @@ re-exports `std`'s on native. One import change in `ui_state.rs` covers flash an
 status; it also unblocks `rainbow-mode`'s animation clock (same gap — coordinate
 so the swap happens once).
 
+Because that import lives in **shared** `ui_state.rs` — compiled by the native
+binary too — `web-time` must be a **plain `[dependencies]` entry, not
+wasm-target-gated**. It's the same drop-in on both targets (it re-exports `std`'s
+`Instant` on native), so a target-gated placement would leave the native build
+with an unresolved `web_time` import. Only `ratzilla`/`web-sys` are genuinely
+wasm-only.
+
 ### 4. Cargo / crate structure
 
 The native build needs `crossterm` + `arboard`; the web build needs `ratzilla` +
@@ -112,7 +122,8 @@ The native build needs `crossterm` + `arboard`; the web build needs `ratzilla` +
   arboard under `[target.'cfg(not(target_arch = "wasm32"))'.dependencies]` and
   ratzilla + web-sys under `[target.'cfg(target_arch = "wasm32")'.dependencies]`,
   with `main.rs` (native) vs a `lib.rs`/`#[wasm_bindgen(start)]` web entry chosen
-  by cfg.
+  by cfg. `web-time` stays in the plain `[dependencies]` (it's used by shared code
+  on both targets — see gap 3), not under either target table.
 - **Workspace split** (cleaner, recommended): a `calculator-core` lib
   (`action`, `app`, `eval`, `ui_state`, and the backend-agnostic parts of `ui`)
   plus two thin entry crates — `calculator` (native bin, crossterm) and

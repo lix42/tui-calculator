@@ -14,10 +14,13 @@ Two facts about terminal input shape this design:
 1. **No modifier-only event.** Terminals do not emit a "Alt went down" event on
    its own — a modifier is only ever reported *attached to a key event*. So an
    overlay that appears *purely while the modifier is held* (and disappears on
-   release), before any key is pressed, is **not achievable in the TUI**. The
-   web/ratzilla backend *does* get real `keydown`/`keyup`, so the
-   "tips while held" behavior is feasible there — a divergence to note, not
-   solve here.
+   release), before any key is pressed, is **not achievable in the TUI**. The web
+   is only marginally better: Ratzilla's `on_key_event` surfaces **`keydown`
+   only** (its backend registers `KEY_EVENT_TYPES = &["keydown"]` and its
+   `KeyEvent` carries no press/release kind), so a held-only overlay there isn't
+   free either — it would need **separate DOM `keyup` wiring** outside the
+   `on_key_event` path to know when the modifier was released. Treat held-only as
+   "web-only *and* extra wiring", not a backend freebie.
 2. **`Ctrl` is a poor trigger in a terminal.** The control register is heavily
    overloaded: `Ctrl-H` arrives as Backspace, `Ctrl-J` as Enter, `Ctrl-C` is the
    app's quit, `Ctrl-L` is redraw by convention, and several `Ctrl`+letter combos
@@ -28,7 +31,7 @@ Two facts about terminal input shape this design:
 
 **Recommendation:** trigger on **`Alt`** (reported cleanly as `KeyModifiers::ALT`
 and far less overloaded), and surface the mapping with an **always-on faint tip**
-(or a toggended legend), not a held-only overlay. The user said "e.g. ctrl" — this
+(or a toggled legend), not a held-only overlay. The user said "e.g. ctrl" — this
 is the one decision worth confirming at implementation time; the rest of the
 design is modifier-agnostic.
 
@@ -72,8 +75,9 @@ is enabled. Because tips live in the cell render, they ride on top of whatever
 **When to show them**, given caveat (1):
 - **Recommended:** a faint, always-on tip (low-contrast so it doesn't clutter),
   or a `?`-toggled legend. Discoverable without needing a modifier-down event.
-- The "show only while held" variant can be added *on the web build later*,
-  where keyup/keydown exist.
+- The "show only while held" variant is web-build-only **and** needs explicit
+  DOM `keyup` wiring (Ratzilla's `on_key_event` is keydown-only — see caveat 1),
+  so it's a later add-on, not a freebie.
 
 ### Interaction with focus navigation
 
@@ -127,4 +131,4 @@ Manual:
 - **Trigger modifier**: `Alt` (recommended) vs `Ctrl` (requested as an example).
   Confirm before implementing — it changes which terminal chords are at risk.
 - **Tip visibility policy**: always-on faint vs toggle-on legend. Held-only is a
-  web-build-only option (see caveat 1).
+  web-build-only option that additionally needs DOM `keyup` wiring (see caveat 1).

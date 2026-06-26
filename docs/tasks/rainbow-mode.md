@@ -51,6 +51,12 @@ let spans = top.chars().map(|c| match c {
 Line::from(spans.collect::<Vec<_>>())
 ```
 
+(Sketch — kept short for clarity.) In the real implementation, map each digit
+char to a `&'static str` (e.g. index a `["0", …, "9"]` table by `c as usize -
+'0' as usize`) so a `Span` borrows it instead of allocating a fresh `String` per
+character via `to_string()` every frame; operators can keep `Span::raw` over a
+borrowed slice too.
+
 Keep this in `ui.rs`: `App` stays rendering-agnostic (it already hands back
 strings; turning a string into colored spans is pure presentation). The mono
 branch keeps the existing `Line::from(top)` path unchanged.
