@@ -28,4 +28,4 @@ Modules under `src/`:
 
 Input is **expression-based** (digits, `+-*/`, parentheses); keyboard (HJKL/arrows navigate the grid), mouse clicks, and bracketed paste all funnel through the same `Action` boundary.
 
-Key dependencies: `ratatui` (TUI rendering), `crossterm` (terminal input), `arboard` (system clipboard — used by `do_copy` in `main.rs`). **Clipboard gotcha:** the copy is a one-shot `set_text`; on Linux/X11 clipboard contents are tied to process lifetime, so a copy may not survive app exit without a clipboard manager (macOS/Windows persist it).
+Key dependencies: `ratatui` (TUI rendering), `crossterm` (terminal input), `arboard` (system clipboard, `wayland-data-control` feature on for pure-Wayland support — used by `do_copy` in `main.rs`). **Clipboard gotcha:** on Linux the copied text is served by the live `Clipboard` instance, so `copy_to_clipboard` keeps one handle in a process-lifetime `thread_local` (`CLIPBOARD`) rather than building one per copy — a fresh-per-copy handle would let `set_text` report success while the paste silently fails. Even so, on Linux the text may not survive app exit without a clipboard manager (macOS/Windows persist it).

@@ -150,6 +150,14 @@ impl UiState {
         self.status.as_ref().map(|(msg, _)| msg.as_str())
     }
 
+    /// Dismiss the transient status message immediately, rather than waiting for
+    /// `tick` to expire it after `STATUS_DURATION`. Called when the user starts a
+    /// new edit (a digit, an operator, a paste): the "Copied!" line refers to the
+    /// previous result, so it shouldn't linger over a fresh expression.
+    pub fn clear_status(&mut self) {
+        self.status = None;
+    }
+
     /// Expire the press flash and the status message once each has been visible
     /// for its duration. Called once per run-loop iteration before drawing.
     pub fn tick(&mut self) {
@@ -274,6 +282,9 @@ mod tests {
         // A fresh status is within STATUS_DURATION, so tick keeps it.
         ui.tick();
         assert_eq!(ui.status_text(), Some("Copied!"));
+        // A new edit dismisses it immediately, without waiting for expiry.
+        ui.clear_status();
+        assert_eq!(ui.status_text(), None);
     }
 
     #[test]

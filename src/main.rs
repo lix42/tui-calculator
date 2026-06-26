@@ -107,6 +107,9 @@ fn handle_event(event: Event, app: &mut App, ui: &mut UiState) {
     // `App::apply_str`, not `activate`, so the paste is one logical edit — no
     // per-character focus move or press flash.
     if let Event::Paste(text) = event {
+        // A paste is a fresh edit, so drop any lingering "Copied!" from the last
+        // result before it's applied.
+        ui.clear_status();
         app.apply_str(&text);
         return;
     }
@@ -158,6 +161,9 @@ fn handle_event(event: Event, app: &mut App, ui: &mut UiState) {
 /// funnel for every activation so feedback is uniform across keyboard, grid,
 /// and mouse. `action.label()` names the grid cell to flash.
 fn activate(app: &mut App, ui: &mut UiState, action: Action) {
+    // A new activation is a fresh edit, so drop any lingering "Copied!" status
+    // before applying it — that line refers to the previous result.
+    ui.clear_status();
     app.apply(action);
     ui.register_press(action.label());
 }
@@ -186,15 +192,36 @@ fn do_copy(app: &App, ui: &mut UiState) {
     ui.set_status(status);
 }
 
-/// Place `text` on the system clipboard.
+thread_local! {
+    /// A clipboard handle reused for the whole session.
+    ///
+    /// On Linux (X11 and Wayland) arboard serves the copied text *from the live
+    /// `Clipboard` instance* — drop it and the contents can vanish before another
+    /// app reads them, so a fresh-per-copy handle would let `set_text` report
+    /// success while the paste silently fails. Holding one instance for the
+    /// process lifetime keeps the text available while the app runs. macOS and
+    /// Windows hand the text to the OS, so reusing the handle is simply cheaper.
+    ///
+    /// The TUI is single-threaded, so a `thread_local` is effectively a
+    /// process-global without needing `Clipboard: Sync`. Lazily built on first
+    /// copy; a failed build leaves the slot empty so the next copy retries.
+    static CLIPBOARD: std::cell::RefCell<Option<arboard::Clipboard>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Place `text` on the system clipboard, using the session-long handle above.
 ///
-/// NOTE: on Linux/X11, clipboard contents are tied to the owning process's
-/// lifetime — what's copied here may not survive the app exiting unless a
-/// clipboard manager is running to take ownership. macOS and Windows persist
-/// the text after exit, so this one-shot set is sufficient there.
+/// NOTE: even with a persistent handle, on Linux the text is served by this
+/// process, so it may not survive the app exiting unless a clipboard manager is
+/// running to take ownership. macOS and Windows persist it after exit.
 fn copy_to_clipboard(text: &str) -> std::result::Result<(), arboard::Error> {
-    let mut clipboard = arboard::Clipboard::new()?;
-    clipboard.set_text(text)
+    CLIPBOARD.with_borrow_mut(|slot| {
+        if slot.is_none() {
+            *slot = Some(arboard::Clipboard::new()?);
+        }
+        // Just populated above on the `None` path, so the handle is present.
+        slot.as_mut().expect("clipboard initialized").set_text(text)
+    })
 }
 
 /// The single keyboard → [`Action`] map. Printable characters resolve via
