@@ -1,5 +1,5 @@
-//! UI state: button-grid focus, the momentary press flash, and the on-screen
-//! geometry used for mouse hit-testing.
+//! UI state: button-grid focus, the momentary press flash, the on-screen
+//! geometry used for mouse hit-testing, and the copy affordance + its status.
 //!
 //! This is the rendering/input-routing half of what used to live in `App`. It
 //! owns the grid (`BUTTONS`), where focus currently sits, which cell is flashing,
@@ -17,6 +17,11 @@ use ratatui::layout::{Position, Rect};
 /// run loop's `tick` clears once this much time has passed.
 const FLASH_DURATION: Duration = Duration::from_millis(120);
 
+/// How long the copy status message ("Copied!" / "Copy failed") stays on screen.
+/// Longer than `FLASH_DURATION` because this is text the user needs to *read*,
+/// not a momentary blink. Cleared by the same `tick` that expires the flash.
+const STATUS_DURATION: Duration = Duration::from_millis(1500);
+
 pub const BUTTONS: [[&str; 4]; 5] = [
     ["C", "(", ")", "÷"],
     ["7", "8", "9", "×"],
@@ -32,6 +37,14 @@ pub struct UiState {
     // Screen rect of each grid cell, captured by the UI each draw. Mouse
     // hit-testing reads these (see `button_at`).
     button_rects: [[Rect; 4]; 5],
+    // Screen rect of the copy affordance, captured by the UI each draw (or
+    // `Rect::ZERO` when it isn't shown). `copy_hit` clicks against it.
+    copy_rect: Rect,
+    // The transient copy status message and when it was set. Owned `String` (not
+    // `&'static str`) so a failure can carry the actual `arboard` error detail —
+    // a TUI has no log, so this status line is the only place it can surface.
+    // `None` when nothing is being shown; expired by `tick` after `STATUS_DURATION`.
+    status: Option<(String, Instant)>,
 }
 
 impl UiState {
@@ -41,6 +54,8 @@ impl UiState {
             flash: None,
             flash_at: Instant::now(),
             button_rects: [[Rect::ZERO; 4]; 5],
+            copy_rect: Rect::ZERO,
+            status: None,
         }
     }
 
@@ -110,11 +125,41 @@ impl UiState {
         None
     }
 
-    /// Expire the press flash once it has been visible for `FLASH_DURATION`.
-    /// Called once per run-loop iteration before drawing.
+    /// Record the screen rect of the copy affordance, or `Rect::ZERO` when it
+    /// isn't shown. Called by the UI once per draw, mirroring `set_button_rects`,
+    /// so `copy_hit` tests against the current layout.
+    pub fn set_copy_rect(&mut self, rect: Rect) {
+        self.copy_rect = rect;
+    }
+
+    /// Whether a click at `(col, row)` landed on the copy affordance. Always
+    /// `false` when the affordance isn't shown, since its rect is then
+    /// `Rect::ZERO` (zero-area rects contain no point).
+    pub fn copy_hit(&self, col: u16, row: u16) -> bool {
+        self.copy_rect.contains(Position { x: col, y: row })
+    }
+
+    /// Show a transient status message (e.g. "Copied!"). Replaces any current
+    /// one and restarts its timer; `tick` clears it after `STATUS_DURATION`.
+    pub fn set_status(&mut self, message: String) {
+        self.status = Some((message, Instant::now()));
+    }
+
+    /// The status message currently on screen, or `None` if none is showing.
+    pub fn status_text(&self) -> Option<&str> {
+        self.status.as_ref().map(|(msg, _)| msg.as_str())
+    }
+
+    /// Expire the press flash and the status message once each has been visible
+    /// for its duration. Called once per run-loop iteration before drawing.
     pub fn tick(&mut self) {
         if self.flash.is_some() && self.flash_at.elapsed() >= FLASH_DURATION {
             self.flash = None;
+        }
+        if let Some((_, at)) = self.status
+            && at.elapsed() >= STATUS_DURATION
+        {
+            self.status = None;
         }
     }
 }
@@ -205,6 +250,30 @@ mod tests {
         ui.register_press("?");
         assert_eq!(ui.focus, (4, 3)); // unchanged
         assert!(!ui.is_pressed((4, 3)));
+    }
+
+    #[test]
+    fn copy_hit_tests_against_the_stored_rect() {
+        let mut ui = UiState::new();
+        // No affordance shown yet → rect is ZERO, so nothing is a hit.
+        assert!(!ui.copy_hit(0, 0));
+
+        ui.set_copy_rect(Rect::new(2, 1, 8, 1)); // x∈[2,10), y == 1
+        assert!(ui.copy_hit(2, 1)); // top-left corner is inside
+        assert!(ui.copy_hit(9, 1)); // last column inside
+        assert!(!ui.copy_hit(10, 1)); // just past the right edge
+        assert!(!ui.copy_hit(5, 2)); // wrong row
+    }
+
+    #[test]
+    fn status_set_and_read() {
+        let mut ui = UiState::new();
+        assert_eq!(ui.status_text(), None);
+        ui.set_status("Copied!".to_string());
+        assert_eq!(ui.status_text(), Some("Copied!"));
+        // A fresh status is within STATUS_DURATION, so tick keeps it.
+        ui.tick();
+        assert_eq!(ui.status_text(), Some("Copied!"));
     }
 
     #[test]

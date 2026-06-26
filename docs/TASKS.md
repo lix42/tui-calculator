@@ -13,4 +13,4 @@
 [x] button-nav: Button navigation with HJKL/arrows
 [x] mouse-input: Mouse click support
 [x] paste-input: Paste a whole expression via bracketed paste
-[ ] copy-clipboard: Copy result to system clipboard
+[x] copy-clipboard: Copy result to system clipboard

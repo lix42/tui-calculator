@@ -259,6 +259,23 @@ impl App {
             Mode::Error(msg) => (live, msg.clone()),
         }
     }
+
+    /// The result string to copy to the clipboard, or `None` when there's
+    /// nothing copyable.
+    ///
+    /// Only a *successful* evaluation yields a value. By the time the mode is
+    /// `Evaluated`, `evaluate` has already collapsed `expr` to a single `Number`,
+    /// so `display_string` here renders exactly the result line the display shows.
+    /// `Editing` and `Error` return `None` — there's no finished result to copy,
+    /// and an error message is never copyable. The UI reads `is_some()` to decide
+    /// whether to show the copy affordance, so this is the single source for both
+    /// "can copy?" and "what to copy".
+    pub fn copy_text(&self) -> Option<String> {
+        match self.mode {
+            Mode::Evaluated(_) => Some(display_string(&self.expr, &self.current)),
+            Mode::Editing | Mode::Error(_) => None,
+        }
+    }
 }
 
 /// Renders the committed `expr` tokens plus the in-progress `current` buffer
@@ -656,6 +673,49 @@ mod tests {
         let mut app = App::new();
         app.apply_str("1+1\n2");
         assert_eq!(app.display_lines().1, "1+12");
+    }
+
+    // --- copy ---
+
+    #[test]
+    fn copy_text_some_after_eval() {
+        let mut app = App::new();
+        for b in ["2", "+", "3", "="] {
+            press(&mut app, b);
+        }
+        assert_eq!(app.copy_text().as_deref(), Some("5"));
+    }
+
+    #[test]
+    fn copy_text_none_while_editing() {
+        let mut app = App::new();
+        for b in ["2", "+", "3"] {
+            press(&mut app, b);
+        }
+        assert_eq!(app.copy_text(), None);
+    }
+
+    #[test]
+    fn copy_text_none_on_error() {
+        let mut app = App::new();
+        for b in ["1", "÷", "0", "="] {
+            press(&mut app, b);
+        }
+        assert!(matches!(app.mode, Mode::Error(_)));
+        assert_eq!(app.copy_text(), None);
+    }
+
+    #[test]
+    fn copy_text_dismissed_by_new_input() {
+        // A fresh digit after `=` returns to Editing, so the result is no longer
+        // copyable — the UI affordance disappears the same way.
+        let mut app = App::new();
+        for b in ["2", "+", "3", "="] {
+            press(&mut app, b);
+        }
+        assert!(app.copy_text().is_some());
+        press(&mut app, "7");
+        assert_eq!(app.copy_text(), None);
     }
 
     #[test]
