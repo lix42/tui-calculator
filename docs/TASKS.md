@@ -17,7 +17,10 @@
 
 ## Planned
 
-[ ] layout-config: Configurable, runtime-switchable button layouts (array→Vec refactor; the const-generic grid is the hard part). Sequence first — rainbow-mode and quick-input build on its render path.
+[ ] layout-config: De-hardcode the button grid (array→Vec/slice; the const-generic 5×4 is the hard part) + cell-spanning buttons (wide 0, tall =). Ships one standard pad; no new keys/functions, no switching/auto-select (see follow-ups). Sequence first — rainbow-mode and quick-input build on its render path.
+[ ] layout-registry: Multiple named pads + a manual switch key. Adds a Vec<Keypad> registry, active-index + override state, and the switch trigger routed in main.rs (not an Action); each pad carries a default_focus and a switch clamps focus into the new pad. Pure addition on layout-config's model. Depends (hard): layout-config.
+[ ] layout-auto: Auto-select the pad that best fits the terminal shape (narrow-tall vs wide-short) on resize, with the manual override taking precedence. Per-pad shape hint / fits(w,h) score. Depends (hard): layout-registry.
+[ ] focus-per-button: Make grid navigation step one button per key press instead of one lattice cell, so crossing a spanning button (wide 0, tall =) takes a single press. Moves focus from a lattice cell to a button index, stepping over covered regions via the pad's occupancy map. Depends (hard): layout-config.
 [ ] rainbow-mode: Per-digit rainbow color mode for display + buttons, optional animation (shares the web-time clock gap with web-ratzilla). Depends (soft): layout-config.
 [ ] quick-input: Modifier-held (Alt, not Ctrl) quick keyboard map h/j/k/l→4/5/6/- with on-cell tips. Depends (soft): layout-config.
 [ ] web-ratzilla: Ratzilla WASM web build + Cloudflare Pages deploy (large; platform port). Gaps: event-loop inversion → Msg enum, arboard→navigator.clipboard, Instant→web-time, crate split. Sequence last.
