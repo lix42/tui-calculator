@@ -1,6 +1,7 @@
 mod action;
 mod app;
 mod eval;
+mod layout;
 mod ui;
 mod ui_state;
 
@@ -20,7 +21,7 @@ use ratatui::backend::CrosstermBackend;
 
 use action::Action;
 use app::App;
-use ui_state::{BUTTONS, UiState};
+use ui_state::UiState;
 
 type Tui = Terminal<CrosstermBackend<Stdout>>;
 
@@ -94,8 +95,8 @@ fn handle_event(event: Event, app: &mut App, ui: &mut UiState) {
             // it's checked before the button hit-test.
             if ui.copy_hit(mouse.column, mouse.row) {
                 do_copy(app, ui);
-            } else if let Some((r, c)) = ui.button_at(mouse.column, mouse.row)
-                && let Some(action) = Action::from_label(BUTTONS[r][c])
+            } else if let Some(i) = ui.button_at(mouse.column, mouse.row)
+                && let Some(action) = Action::from_label(ui.button_label(i))
             {
                 activate(app, ui, action);
             }
@@ -316,7 +317,7 @@ mod tests {
             &mut app,
             &mut ui,
         );
-        assert!(ui.is_focused((4, 2))); // moved left
+        assert_eq!(ui.focus(), (4, 2)); // moved left
     }
 
     #[test]
@@ -331,7 +332,7 @@ mod tests {
             &mut app,
             &mut ui,
         );
-        assert!(ui.is_focused((4, 3))); // unchanged
+        assert_eq!(ui.focus(), (4, 3)); // unchanged
     }
 
     #[test]

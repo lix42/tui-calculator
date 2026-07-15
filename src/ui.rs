@@ -5,12 +5,22 @@ use ratatui::text::Line;
 use ratatui::widgets::{Block, BorderType, Padding, Paragraph};
 
 use crate::app::App;
-use crate::ui_state::{BUTTONS, UiState};
+use crate::ui_state::UiState;
+
+/// Fixed on-screen size of one lattice cell (columns × rows) and the height of
+/// the display box above the grid. The panel is sized from these and the active
+/// keypad's dimensions, so a differently-shaped pad still centers correctly —
+/// there are no baked-in grid dimensions here.
+const CELL_W: u16 = 7;
+const CELL_H: u16 = 5;
+const DISPLAY_H: u16 = 4;
 
 pub fn draw(frame: &mut Frame, app: &App, ui: &mut UiState) {
-    let panel = centered_panel(frame.area(), 28, 29);
+    let grid_w = ui.keypad().cols() as u16 * CELL_W;
+    let grid_h = ui.keypad().rows() as u16 * CELL_H;
+    let panel = centered_panel(frame.area(), grid_w, DISPLAY_H + grid_h);
     let [display_area, button_area] =
-        Layout::vertical([Constraint::Length(4), Constraint::Length(25)]).areas(panel);
+        Layout::vertical([Constraint::Length(DISPLAY_H), Constraint::Length(grid_h)]).areas(panel);
 
     draw_display(frame, app, ui, display_area);
     draw_buttons(frame, ui, button_area);
@@ -117,20 +127,41 @@ fn left_rect(area: Rect, width: usize) -> Rect {
 }
 
 fn draw_buttons(frame: &mut Frame, ui: &mut UiState, area: Rect) {
-    let row_constraints = [Constraint::Max(5); 5];
-    let col_constraints = [Constraint::Length(7); 4];
-    let rows = Layout::vertical(row_constraints).areas::<5>(area);
+    let keypad = ui.keypad();
+    // Split once per axis into the coordinate lattice; each button's rect is the
+    // bounding box of the cells it spans (see `layout::Button`). `split` is
+    // runtime-sized (`Rc<[Rect]>`), so no grid dimension is a const generic.
+    let col_x = Layout::horizontal(std::iter::repeat_n(
+        Constraint::Length(CELL_W),
+        keypad.cols(),
+    ))
+    .split(area);
+    let row_y = Layout::vertical(std::iter::repeat_n(
+        Constraint::Length(CELL_H),
+        keypad.rows(),
+    ))
+    .split(area);
 
-    let mut rects = [[Rect::ZERO; 4]; 5];
-    for (r, row_area) in rows.iter().enumerate() {
-        let cells = Layout::horizontal(col_constraints).areas::<4>(*row_area);
-        for (c, cell_area) in cells.iter().enumerate() {
-            let label = BUTTONS[r][c];
-            let focused = ui.is_focused((r, c));
-            let pressed = ui.is_pressed((r, c));
-            draw_button(frame, label, focused, pressed, *cell_area);
-            rects[r][c] = *cell_area;
-        }
+    let mut rects = vec![Rect::ZERO; keypad.button_count()];
+    for (i, b) in keypad.buttons().iter().enumerate() {
+        let left = col_x[b.col as usize];
+        let top = row_y[b.row as usize];
+        let right = col_x[(b.col + b.col_span - 1) as usize];
+        let bottom = row_y[(b.row + b.row_span - 1) as usize];
+        let rect = Rect {
+            x: left.x,
+            y: top.y,
+            width: right.x + right.width - left.x,
+            height: bottom.y + bottom.height - top.y,
+        };
+        draw_button(
+            frame,
+            b.label,
+            ui.is_button_focused(i),
+            ui.is_button_pressed(i),
+            rect,
+        );
+        rects[i] = rect;
     }
     // Hand the just-rendered geometry to the UI state so the next mouse event
     // can hit-test against exactly what's on screen.
