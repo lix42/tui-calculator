@@ -131,8 +131,16 @@ fn draw_buttons(frame: &mut Frame, ui: &mut UiState, area: Rect) {
     // Split once per axis into the coordinate lattice; each button's rect is the
     // bounding box of the cells it spans (see `layout::Button`). `split` is
     // runtime-sized (`Rc<[Rect]>`), so no grid dimension is a const generic.
-    let col_x = Layout::horizontal(vec![Constraint::Length(CELL_W); keypad.cols()]).split(area);
-    let row_y = Layout::vertical(vec![Constraint::Length(CELL_H); keypad.rows()]).split(area);
+    let col_x = Layout::horizontal(std::iter::repeat_n(
+        Constraint::Length(CELL_W),
+        keypad.cols(),
+    ))
+    .split(area);
+    let row_y = Layout::vertical(std::iter::repeat_n(
+        Constraint::Length(CELL_H),
+        keypad.rows(),
+    ))
+    .split(area);
 
     let mut rects = vec![Rect::ZERO; keypad.button_count()];
     for (i, b) in keypad.buttons().iter().enumerate() {
