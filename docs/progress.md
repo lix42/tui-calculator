@@ -347,6 +347,101 @@ Key implementation details:
   so it sets no status. `copy_text` (the decision) is fully covered. The success
   status path is verified manually per the task's test steps.
 
+### layout-config — `src/layout.rs` (new), `src/ui_state.rs`, `src/ui.rs`, `src/main.rs`
+De-hardcoded the button grid: the const-generic 5×4 (`[[&str; 4]; 5]`,
+`areas::<N>`) is gone. The layout is now *data* — a `Keypad` value the rest of
+the UI reads — with cell spanning in the model. Shipped as #17. Landed in the two
+green checkpoints the task file prescribed (mechanical de-hardcode first, then the
+spanning model).
+
+Key implementation details:
+- **`src/layout.rs` (new, pure — no ratatui/crossterm).** A pad is *authored* as
+  an occupancy grid of label tokens and `compile`d into a `Keypad` at startup:
+  - `Keypad { rows, cols, buttons: Vec<Button>, occupancy: Vec<Vec<usize>>,
+    label_pos: HashMap<&str,(usize,usize)> }`; `Button { label, row, col,
+    row_span, col_span }`. A token repeated across adjacent cells *is* a spanning
+    button (its region is the bounding box of its cells).
+  - `compile` **validates and panics** on malformed static data: non-rectangular
+    grid, or a token whose cells don't fill their bounding box (ragged/L-shaped
+    span, or the same label reused disjointly). Buttons come out in reading order.
+  - The reverse index (`label → anchor cell`) moved off the old process-global
+    `LazyLock<BUTTONS>` onto `Keypad::position_of`, built during the same compile
+    walk. `button_index_at(r,c)` resolves a cell → covering button in O(1).
+  - `STANDARD` is 5×4, **all 1×1** (spanning exists in the model + is unit-tested
+    with wide/tall pads, but the shipped pad uses none yet). The grid now carries
+    `⌫` at (4,0) alongside `C`/`(`/`)`.
+- **`src/ui_state.rs`.** `UiState` owns the active `Keypad`. Focus stays a lattice
+  cell `(usize,usize)` (smallest delta from before) and resolves to a button
+  through `occupancy` wherever one is needed: `focused_label`, `is_button_focused`,
+  `is_button_pressed`, `register_press` all go through the occupancy map, so a
+  spanning button reads/flashes as one unit. `button_rects` is now `Vec<Rect>`
+  (one **union rect per button**, not per cell); `button_at` returns a *button
+  index* by hit-testing those union rects — a click anywhere on a spanning button,
+  internal seams included, hits it. Focus homes on `"="` via `position_of` (was
+  the hardcoded `(4,3)`).
+- **`src/ui.rs`.** `draw_buttons` splits the area once per axis into a runtime
+  coordinate lattice (`Layout::split` → `Rc<[Rect]>`; **no const generics**) and
+  draws each button once over the bounding box of the cells it spans. Panel size
+  derives from the active pad's dims × `CELL_W`/`CELL_H` + `DISPLAY_H` (7/5/4), so
+  a differently-shaped pad re-centers for free — no magic `28`/`29`/`25`.
+- **`src/main.rs`.** The mouse path resolves `button_at` → `button_label` →
+  `Action::from_label`; Space activates `focused_label`. No `BUTTONS[r][c]`
+  indexing anymore.
+- Tests: `layout.rs` covers compile/occupancy/reading-order, wide+tall spans, and
+  the three rejection cases (disjoint, L-shape, ragged). `ui_state.rs` tests
+  extended to the `Keypad`-backed focus/hit-test. All green.
+
+**Carry-forward for `layout-registry` / `focus-per-button`:** the active pad is
+read through a single accessor (`ui.keypad()`), so multiplying pads doesn't
+re-open this model. **Gotcha:** `Keypad` allocates (`Vec`, `HashMap`), so it
+*cannot* be a `static`/`const` — the task file's sketch of
+`static LAYOUTS: &[Keypad] = &[STANDARD, TALL, WIDE]` won't compile. The registry
+must be a runtime `Vec<Keypad>` built in `UiState::new` (each via `compile`).
+`default_focus` doesn't exist yet — `UiState::new` hardcodes the `"="` home; a
+per-pad home is `layout-registry`'s to add.
+
+### layout-registry — `src/layout.rs`, `src/ui_state.rs`, `src/main.rs`
+
+**Status:** done · 2026-07-21
+
+Multiple named pads + a manual switch key, a pure addition on `layout-config`'s
+`Keypad` model — the model didn't re-open, exactly as the carry-forward predicted.
+
+- **`src/layout.rs`.** `Keypad` gained a `default_focus: (usize,usize)` field +
+  accessor, resolved *at compile time from a label* — `compile(grid,
+  default_focus_label)` looks the label up in `label_pos` and **panics if it's not
+  on the pad** (same "malformed static data is a programming error" stance as the
+  span invariants). Added a second real pad `TALL` (6×4: wide `0` 1×2, wide `+`
+  1×3, tall `=` 2×1) so spanning is finally exercised on a shipped pad and there's
+  something to switch *to*. Both pads home on `"="`.
+- **`src/ui_state.rs`.** The single `keypad` field became a **runtime `Vec<Keypad>`
+  registry + active index** (`layouts` / `layout`), built in `new` (`vec![standard,
+  tall]`) — *not* a `static`, per the carry-forward gotcha. Index 0 active at
+  startup, so behavior is unchanged until the user switches. `keypad()` now returns
+  `&layouts[layout]`; every downstream reader was already going through that
+  accessor, so nothing else changed. Added `cycle_layout()` → `set_layout(i)`, which
+  drops the stale press-flash and fixes up focus via `resolve_focus`.
+- **`resolve_focus(old, pad)` — the one load-bearing decision, policy "preserve,
+  else default".** If the old lattice cell is in-bounds on the new pad, keep it but
+  **snap to the covering button's anchor** (via `button_index_at` → `button(idx).
+  row/col`), so focus never lands on a non-anchor cell of a span; if out of bounds,
+  fall back to `pad.default_focus()`. The snap is the subtle part: without it,
+  switching onto a wide `0`/tall `=` would leave focus on a dead interior cell.
+- **`src/main.rs`.** `KeyCode::Tab => ui.cycle_layout()` — routed at the I/O
+  boundary like copy and focus-moves, **not** an `Action`: switching transforms no
+  calculator state, so it stays out of `App::apply`'s pure match.
+- Tests: `layout.rs` covers `default_focus` (incl. the unknown-label panic) and the
+  tall pad's spans; `ui_state.rs` covers cycle+wrap and all three `resolve_focus`
+  branches (preserve, snap-to-anchor, fall-back); `main.rs` covers the Tab route.
+  80 tests green, `cargo clippy` clean.
+
+**Carry-forward for `layout-auto`:** pads live in `ui.layouts` (a `Vec<Keypad>`)
+with `ui.set_layout(i)` as the switch primitive — `layout-auto` should call the
+same primitive on resize, gated behind a manual-override flag so an explicit Tab
+wins over shape-based auto-select. Each pad has `default_focus` but **no shape hint
+yet**; a per-pad `fits(w,h)`/aspect score is `layout-auto`'s to add. `Tab` is the
+one switch trigger today; auto-select must not fight it.
+
 ## Known Issues / Deferred
 
 - **`Action::Op(char)` is a convention-enforced invariant (follow-up to
@@ -369,8 +464,15 @@ Key implementation details:
 
 ## Next Task
 
-**copy-clipboard** is the last remaining task — copy the result to the system
-clipboard. The `arboard` dependency is already in `Cargo.toml` but unused. Worth
-a focused pass on its own: `arboard` has real platform quirks (e.g. X11
-clipboard ownership on Linux is tied to process lifetime), so this is more than
-a one-liner despite the dep already being present.
+**layout-auto** — newly unblocked by `layout-registry`. Auto-select the pad that
+best fits the terminal shape (narrow-tall vs wide-short) on resize, with a manual
+`Tab` override taking precedence. See `layout-registry`'s carry-forward above: call
+the existing `ui.set_layout(i)` primitive from the resize path, gated behind an
+override flag so an explicit Tab wins. Each pad needs a new shape hint /
+`fits(w,h)` score (doesn't exist yet). Nothing else waits on it downstream.
+
+Also executable in parallel (all depend only on the already-done `layout-config`):
+`focus-per-button`, `rainbow-mode`, `quick-input`. **Conflict watch:**
+`focus-per-button` reworks the focus model in `ui_state.rs` (lattice cell → button
+index), which overlaps `layout-auto`'s resize/`resolve_focus` code — sequence those
+two rather than running them together.

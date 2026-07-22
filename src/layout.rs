@@ -25,10 +25,11 @@ pub struct Keypad {
     buttons: Vec<Button>,
     occupancy: Vec<Vec<usize>>, // [row][col] -> index into `buttons`
     label_pos: HashMap<&'static str, (usize, usize)>, // label -> anchor cell
+    default_focus: (usize, usize), // the pad's home cell (a button anchor)
 }
 
 /// The standard macOS-style pad. Every key is `1×1`; spanning exists in the
-/// model (see `compile`) but the shipped pad doesn't use it yet.
+/// model (see `compile`) but this pad doesn't use it.
 const STANDARD: &[&[&str]] = &[
     &["C", "(", ")", "÷"],
     &["7", "8", "9", "×"],
@@ -37,10 +38,29 @@ const STANDARD: &[&[&str]] = &[
     &["⌫", "0", ".", "="],
 ];
 
+/// A taller, spanning pad with the same key set as `standard`, laid out over six
+/// rows: a wide `0` (`1×2`), a wide `+` (`1×3`), and a tall `=` (`2×1`). Ships
+/// alongside `standard` so the layout registry has something to switch to — and
+/// so cell-spanning is finally exercised on a real pad, not just in tests.
+const TALL: &[&[&str]] = &[
+    &["C", "⌫", "(", ")"],
+    &["7", "8", "9", "÷"],
+    &["4", "5", "6", "×"],
+    &["1", "2", "3", "-"],
+    &["0", "0", ".", "="],
+    &["+", "+", "+", "="],
+];
+
 impl Keypad {
     /// The standard pad, compiled once by the caller (e.g. `UiState::new`).
+    /// Homes focus on `"="`.
     pub fn standard() -> Self {
-        compile(STANDARD)
+        compile(STANDARD, "=")
+    }
+
+    /// The tall/spanning pad (see [`TALL`]). Homes focus on `"="`.
+    pub fn tall() -> Self {
+        compile(TALL, "=")
     }
 
     pub fn rows(&self) -> usize {
@@ -75,6 +95,13 @@ impl Keypad {
     pub fn position_of(&self, label: &str) -> Option<(usize, usize)> {
         self.label_pos.get(label).copied()
     }
+
+    /// The pad's home cell — where focus lands when switching to this pad can't
+    /// carry the old cell over (it's out of bounds). Always a button anchor,
+    /// resolved from a label at compile time.
+    pub fn default_focus(&self) -> (usize, usize) {
+        self.default_focus
+    }
 }
 
 /// Compile an occupancy grid into a [`Keypad`], validating the invariants the
@@ -87,7 +114,10 @@ impl Keypad {
 /// a button's bounding box lie about its region: a ragged grid, and a token
 /// whose cells don't fill their bounding box (an L-shape, or the same label
 /// reused in two disjoint places).
-fn compile(grid: &[&[&'static str]]) -> Keypad {
+///
+/// `default_focus_label` names the pad's home button and must appear on the pad;
+/// an unknown label panics like the static-data violations above.
+fn compile(grid: &[&[&'static str]], default_focus_label: &'static str) -> Keypad {
     assert!(!grid.is_empty(), "keypad has no rows");
     let rows = grid.len();
     let cols = grid[0].len();
@@ -146,12 +176,19 @@ fn compile(grid: &[&[&'static str]]) -> Keypad {
         }
     }
 
+    // The home cell must name a real button; a typo is a programming error in
+    // static data, caught here like the span invariants above.
+    let default_focus = *label_pos
+        .get(default_focus_label)
+        .unwrap_or_else(|| panic!("default-focus label '{default_focus_label}' is not on the pad"));
+
     Keypad {
         rows,
         cols,
         buttons,
         occupancy,
         label_pos,
+        default_focus,
     }
 }
 
@@ -186,13 +223,39 @@ mod tests {
     }
 
     #[test]
+    fn standard_default_focus_is_equals() {
+        let k = Keypad::standard();
+        assert_eq!(k.default_focus(), k.position_of("=").unwrap());
+    }
+
+    #[test]
+    fn tall_pad_spans_and_covers() {
+        let k = Keypad::tall();
+        assert_eq!((k.rows(), k.cols()), (6, 4));
+        // wide 0 (1×2) and tall = (2×1) — the real-pad exercise of spanning.
+        let zero = k.button(k.button_index_at(4, 0));
+        assert_eq!((zero.label, zero.row_span, zero.col_span), ("0", 1, 2));
+        assert_eq!(k.button_index_at(4, 0), k.button_index_at(4, 1));
+        let eq = k.button(k.button_index_at(4, 3));
+        assert_eq!((eq.label, eq.row_span, eq.col_span), ("=", 2, 1));
+        assert_eq!(k.button_index_at(4, 3), k.button_index_at(5, 3));
+        assert_eq!(k.default_focus(), k.position_of("=").unwrap());
+    }
+
+    #[test]
+    #[should_panic(expected = "default-focus label")]
+    fn rejects_unknown_default_focus() {
+        compile(&[&["a", "b"]], "z");
+    }
+
+    #[test]
     fn compiles_wide_and_tall_spans() {
         let grid: &[&[&str]] = &[
             &["a", "wide", "wide"],
             &["tall", "b", "c"],
             &["tall", "d", "e"],
         ];
-        let k = compile(grid);
+        let k = compile(grid, "a");
 
         let wide = k.button(k.button_index_at(0, 1));
         assert_eq!((wide.label, wide.row_span, wide.col_span), ("wide", 1, 2));
@@ -214,20 +277,20 @@ mod tests {
         // "x" appears in two non-adjacent cells: bounding box is 2×2 (4 cells) but
         // only 2 belong to it.
         let grid: &[&[&str]] = &[&["x", "a"], &["b", "x"]];
-        compile(grid);
+        compile(grid, "a");
     }
 
     #[test]
     #[should_panic(expected = "filled rectangle")]
     fn rejects_l_shaped_span() {
         let grid: &[&[&str]] = &[&["x", "x"], &["x", "a"]];
-        compile(grid);
+        compile(grid, "a");
     }
 
     #[test]
     #[should_panic(expected = "rectangular")]
     fn rejects_ragged_grid() {
         let grid: &[&[&str]] = &[&["a", "b"], &["c"]];
-        compile(grid);
+        compile(grid, "a");
     }
 }
