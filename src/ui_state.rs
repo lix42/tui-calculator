@@ -24,7 +24,12 @@ const FLASH_DURATION: Duration = Duration::from_millis(120);
 const STATUS_DURATION: Duration = Duration::from_millis(1500);
 
 pub struct UiState {
-    keypad: Keypad,
+    // The pads the user can switch between, and which one is active. Built at
+    // startup (a `Keypad` allocates, so it can't be a `static`). `keypad()`
+    // returns `&layouts[layout]`; everything downstream reads the active pad
+    // through that one accessor, so multiplying pads didn't re-open the model.
+    layouts: Vec<Keypad>,
+    layout: usize,
     focus: (usize, usize),         // lattice cell holding focus
     flash: Option<(usize, usize)>, // lattice cell of the button showing its press look
     flash_at: Instant,             // when the current flash began (see FLASH_DURATION)
@@ -43,12 +48,15 @@ pub struct UiState {
 
 impl UiState {
     pub fn new() -> Self {
-        let keypad = Keypad::standard();
-        // Home the cursor on "=" (its anchor cell), matching the old (4, 3) seed.
-        let focus = keypad.position_of("=").unwrap_or((0, 0));
-        let button_rects = vec![Rect::ZERO; keypad.button_count()];
+        // The registry: the standard pad first (the startup default), then the
+        // tall/spanning pad to switch to. Index 0 is active, so behavior is
+        // unchanged until the user presses the switch key.
+        let layouts = vec![Keypad::standard(), Keypad::tall()];
+        let focus = layouts[0].default_focus();
+        let button_rects = vec![Rect::ZERO; layouts[0].button_count()];
         Self {
-            keypad,
+            layouts,
+            layout: 0,
             focus,
             flash: None,
             flash_at: Instant::now(),
@@ -60,12 +68,35 @@ impl UiState {
 
     /// The active keypad; the UI reads its dimensions and buttons to render.
     pub fn keypad(&self) -> &Keypad {
-        &self.keypad
+        &self.layouts[self.layout]
+    }
+
+    /// Switch to the next pad in the registry, wrapping around. Routed from the
+    /// I/O boundary in `main.rs` (like copy and focus moves), *not* through the
+    /// `Action` enum: switching transforms no calculator state.
+    pub fn cycle_layout(&mut self) {
+        self.set_layout(self.layout + 1);
+    }
+
+    /// Make pad `i` (mod the registry size) active and fix up the per-pad UI state
+    /// for it: the old lattice cell may not exist on the new pad (a `(4, 3)` focus
+    /// is invalid on a 3×4 pad), so focus is re-resolved against the new pad; the
+    /// press flash belongs to the pad we're leaving, so it's dropped; and the
+    /// hit-test rects are resized to the new pad's button count so a click landing
+    /// before the next draw can't reference the old pad's buttons.
+    pub fn set_layout(&mut self, i: usize) {
+        self.layout = i % self.layouts.len();
+        self.focus = resolve_focus(self.focus, &self.layouts[self.layout]);
+        // The press flash belongs to the pad we're leaving; drop it.
+        self.flash = None;
+        // `button_rects` is per-pad; resize to the new pad so hit-testing can't
+        // reference the old pad's buttons before the next draw refills them.
+        self.button_rects = vec![Rect::ZERO; self.layouts[self.layout].button_count()];
     }
 
     pub fn move_focus(&mut self, dr: i32, dc: i32) {
-        let rows = self.keypad.rows() as i32;
-        let cols = self.keypad.cols() as i32;
+        let rows = self.keypad().rows() as i32;
+        let cols = self.keypad().cols() as i32;
         self.focus.0 = (self.focus.0 as i32 + dr).clamp(0, rows - 1) as usize;
         self.focus.1 = (self.focus.1 as i32 + dc).clamp(0, cols - 1) as usize;
     }
@@ -74,14 +105,14 @@ impl UiState {
     /// so the caller can hold it while mutably borrowing `self` elsewhere (e.g.
     /// `let l = ui.focused_label(); ui.register_press(l);`).
     pub fn focused_label(&self) -> &'static str {
-        let idx = self.keypad.button_index_at(self.focus.0, self.focus.1);
-        self.keypad.button(idx).label
+        let idx = self.keypad().button_index_at(self.focus.0, self.focus.1);
+        self.keypad().button(idx).label
     }
 
     /// The label of button `idx`. Used by the mouse path after `button_at`
     /// resolves a click to a button.
     pub fn button_label(&self, idx: usize) -> &'static str {
-        self.keypad.button(idx).label
+        self.keypad().button(idx).label
     }
 
     /// Whether button `idx` currently holds focus — i.e. the focused cell is one
@@ -89,20 +120,20 @@ impl UiState {
     /// button reads as focused from any of its cells. Read by the UI per button
     /// each draw.
     pub fn is_button_focused(&self, idx: usize) -> bool {
-        self.keypad.button_index_at(self.focus.0, self.focus.1) == idx
+        self.keypad().button_index_at(self.focus.0, self.focus.1) == idx
     }
 
     /// Whether button `idx` is currently showing its pressed flash.
     pub fn is_button_pressed(&self, idx: usize) -> bool {
         self.flash
-            .is_some_and(|(r, c)| self.keypad.button_index_at(r, c) == idx)
+            .is_some_and(|(r, c)| self.keypad().button_index_at(r, c) == idx)
     }
 
     /// Record that `label` was just activated: focus follows it and its press
     /// flash starts. No-op if the label isn't on the grid. The run loop's `tick`
     /// clears the flash after `FLASH_DURATION`.
     pub fn register_press(&mut self, label: &str) {
-        if let Some(pos) = self.keypad.position_of(label) {
+        if let Some(pos) = self.keypad().position_of(label) {
             self.focus = pos;
             self.flash = Some(pos);
             self.flash_at = Instant::now();
@@ -182,6 +213,30 @@ impl UiState {
     pub fn focus(&self) -> (usize, usize) {
         self.focus
     }
+
+    /// The active pad's index in the registry. Test-only, for the switch tests.
+    #[cfg(test)]
+    pub fn layout_index(&self) -> usize {
+        self.layout
+    }
+}
+
+/// Choose the focus cell for `pad` when switching to it, carrying the old cell
+/// `(row, col)` over when possible.
+///
+/// Policy ("preserve, else default"): if `(row, col)` is a valid cell on `pad`,
+/// keep the user roughly where they were — but snap to the **anchor** of the
+/// button covering that cell, so focus never lands on a non-anchor cell of a
+/// spanning button. If the old cell is out of `pad`'s bounds, fall back to
+/// `pad.default_focus()`.
+fn resolve_focus(old: (usize, usize), pad: &Keypad) -> (usize, usize) {
+    let (row, col) = old;
+    if row >= pad.rows() || col >= pad.cols() {
+        return pad.default_focus();
+    }
+    let idx = pad.button_index_at(row, col);
+    let b = pad.button(idx);
+    (b.row as usize, b.col as usize)
 }
 
 #[cfg(test)]
@@ -202,6 +257,72 @@ mod tests {
     #[test]
     fn focused_label_default() {
         assert_eq!(UiState::new().focused_label(), "=");
+    }
+
+    #[test]
+    fn cycle_layout_advances_and_wraps() {
+        let mut ui = UiState::new();
+        assert_eq!(ui.layout_index(), 0); // standard active at startup
+        ui.cycle_layout();
+        assert_eq!(ui.layout_index(), 1); // tall
+        ui.cycle_layout();
+        assert_eq!(ui.layout_index(), 0); // wrapped back to standard
+    }
+
+    #[test]
+    fn switch_falls_back_to_default_when_cell_gone() {
+        // tall (6 rows) → standard (5 rows): a focus on tall's bottom row (5)
+        // doesn't exist on standard, so focus falls back to standard's home.
+        let mut ui = UiState::new();
+        ui.set_layout(1); // tall
+        ui.focus = (5, 0); // tall-only row
+        ui.set_layout(0); // standard
+        assert_eq!(ui.focus(), ui.keypad().default_focus());
+    }
+
+    #[test]
+    fn switch_preserves_in_bounds_focus() {
+        // (2, 1) is the "5" cell on both pads and in bounds on each, so switching
+        // keeps focus there rather than resetting to the new pad's home.
+        let mut ui = UiState::new(); // standard, focus on "="
+        ui.focus = (2, 1);
+        ui.set_layout(1); // tall
+        assert_eq!(ui.focus(), (2, 1));
+    }
+
+    #[test]
+    fn switch_snaps_onto_span_anchor() {
+        // (4, 1) is the plain "0" on standard, but on the tall pad it's the second
+        // cell of the wide "0" (anchor at (4, 0)). Preserving must snap to the
+        // covering button's anchor, never a non-anchor cell of a span.
+        let mut ui = UiState::new();
+        ui.focus = (4, 1);
+        ui.set_layout(1); // tall
+        assert_eq!(ui.focus(), (4, 0));
+    }
+
+    #[test]
+    fn switch_snaps_onto_vertical_span_anchor() {
+        // (5, 3) is the lower cell of the tall "=" (2×1, anchor (4, 3)) on the tall
+        // pad — the row-span counterpart of the wide-"0" case above. Preserving must
+        // snap up to the anchor, never rest on the covered cell (5, 3).
+        let mut ui = UiState::new();
+        ui.set_layout(1); // tall
+        ui.focus = (5, 3);
+        ui.set_layout(1); // re-resolve against the tall pad itself
+        assert_eq!(ui.focus(), (4, 3));
+    }
+
+    #[test]
+    fn switch_clears_stale_flash() {
+        // The press flash names a cell on the pad we're leaving; carrying it over
+        // would flash an unrelated button on the new pad (or, for a cell the new pad
+        // doesn't have, index its occupancy map out of bounds). set_layout drops it.
+        let mut ui = UiState::new();
+        ui.register_press("5"); // flash on standard's (2, 1)
+        assert!(ui.flash.is_some());
+        ui.set_layout(1); // tall
+        assert_eq!(ui.flash, None);
     }
 
     #[test]

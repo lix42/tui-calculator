@@ -136,6 +136,10 @@ fn handle_event(event: Event, app: &mut App, ui: &mut UiState) {
         }
         match key.code {
             KeyCode::Char('q') | KeyCode::Esc => app.should_quit = true,
+            // Tab switches to the next keypad. Like copy and focus moves, it's a
+            // UI-only side effect (no calculator state changes), so it's routed
+            // here at the I/O boundary rather than through an `Action`.
+            KeyCode::Tab => ui.cycle_layout(),
             // Copy the result to the clipboard (vim-style yank; Ctrl-C is taken
             // by quit in raw mode). A no-op unless a result is on screen.
             KeyCode::Char('y') | KeyCode::Char('Y') => do_copy(app, ui),
@@ -318,6 +322,20 @@ mod tests {
             &mut ui,
         );
         assert_eq!(ui.focus(), (4, 2)); // moved left
+    }
+
+    #[test]
+    fn tab_cycles_layout() {
+        // Tab is routed to the pad switch here, not through an Action.
+        let mut app = App::new();
+        let mut ui = UiState::new();
+        assert_eq!(ui.layout_index(), 0);
+        handle_event(
+            Event::Key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)),
+            &mut app,
+            &mut ui,
+        );
+        assert_eq!(ui.layout_index(), 1);
     }
 
     #[test]
