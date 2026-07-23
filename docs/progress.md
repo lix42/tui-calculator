@@ -442,6 +442,51 @@ wins over shape-based auto-select. Each pad has `default_focus` but **no shape h
 yet**; a per-pad `fits(w,h)`/aspect score is `layout-auto`'s to add. `Tab` is the
 one switch trigger today; auto-select must not fight it.
 
+### layout-auto — `src/layout.rs`, `src/ui_state.rs`, `src/main.rs`, `src/ui.rs`
+
+**Status:** done · 2026-07-22
+
+Shape-aware automatic pad selection on resize, with a manual pin taking
+precedence. 12 new tests (92 total), `cargo clippy` clean.
+
+- **Pads reshaped first (a prerequisite the task file didn't call out).** The two
+  existing pads were both 4 cols wide, so aspect-ratio scoring had nothing to bite
+  on. `TALL` became genuinely tall-narrow (7×3, wide `=` span) and a new `WIDE`
+  pad (3×7, tall `=` span) was added. Aspect ratios (`need_h/need_w`) now spread
+  cleanly: standard ≈ 1.04, tall ≈ 1.86, wide ≈ 0.39. Registry is `[standard,
+  tall, wide]`. The two span directions are still each exercised on a real pad
+  (tall's horizontal `=`, wide's vertical `=`).
+- **`Keypad::fit_score(w, h) -> i32`** (in `layout.rs`, pure). Totally-ordered so
+  `select_for` has a unique max. **Two tiers:** a pad that overflows the terminal
+  (`w < cols*CELL_W || h < rows*CELL_H + DISPLAY_H`) returns `-1_000_000_000 -
+  overflow` — below every fitting pad, and least-overflow wins when *nothing*
+  fits; a fitting pad scores `-(need_h*w - h*need_w).abs()`, the integer
+  cross-multiplied aspect distance (closest shape wins, no floats). **The overflow
+  gate is load-bearing**, not decoration: without it a landscape terminal 1 column
+  too narrow for `wide` (e.g. 48×29) still scores `wide` best on aspect and picks
+  a pad that can't fit while `standard` fits — `centered_panel` would then clip
+  the last button column. Regression test: `select_for(48, 29) == 0`.
+- **Cell geometry moved to `layout.rs`.** `CELL_W`/`CELL_H`/`DISPLAY_H` were
+  `ui.rs`-private; `fit_score` needs them to know physical fit, so they're now
+  `pub const` in `layout.rs` (single source of truth) and `ui.rs` imports them.
+- **`ui_state.rs`.** `select_for(w, h)` scans the registry keeping the incumbent
+  unless a later pad *strictly* beats it, so ties resolve to the earliest pad
+  (standard) — the documented default. `auto_select(w, h)` caches the size (into
+  new field `term_size`) *before* the pinned early-return, then switches only when
+  the best index actually changes (so a resize within a shape band preserves focus
+  and any in-progress flash). New field `override_layout: Option<usize>`:
+  `cycle_layout` (Tab) now sets `Some(next)` to **pin**, `resume_auto` clears it
+  and re-picks for the cached `term_size`.
+- **`main.rs`.** `Event::Resize → auto_select`, `a`/`A` → `resume_auto` (the
+  counterpart to Tab — Tab pins, `a` un-pins; `a` had no calculator meaning so it
+  collides with nothing), and the initial pad is seeded from `terminal.size()`
+  before the loop (resize events don't fire at startup). All routed at the I/O
+  boundary, not as `Action`s — consistent with copy/switch.
+- **UX decision (user):** override is cleared by a **dedicated `a` key**, not by
+  cycling Tab past the last pad — Tab and `a` stay one-job-each.
+- **Implementation split:** `fit_score`'s body was written by the user; the review
+  caught a missing overflow gate (aspect-only) and an unnecessary cast, both fixed.
+
 ## Known Issues / Deferred
 
 - **`Action::Op(char)` is a convention-enforced invariant (follow-up to
@@ -464,15 +509,16 @@ one switch trigger today; auto-select must not fight it.
 
 ## Next Task
 
-**layout-auto** — newly unblocked by `layout-registry`. Auto-select the pad that
-best fits the terminal shape (narrow-tall vs wide-short) on resize, with a manual
-`Tab` override taking precedence. See `layout-registry`'s carry-forward above: call
-the existing `ui.set_layout(i)` primitive from the resize path, gated behind an
-override flag so an explicit Tab wins. Each pad needs a new shape hint /
-`fits(w,h)` score (doesn't exist yet). Nothing else waits on it downstream.
+The whole layout arc (`layout-config` → `layout-registry` → `layout-auto`) is now
+done. Remaining executable tasks (all depend only on the already-done
+`layout-config`): `focus-per-button`, `rainbow-mode`, `quick-input`; `web-ratzilla`
+is the large platform port, sequenced last.
 
-Also executable in parallel (all depend only on the already-done `layout-config`):
-`focus-per-button`, `rainbow-mode`, `quick-input`. **Conflict watch:**
-`focus-per-button` reworks the focus model in `ui_state.rs` (lattice cell → button
-index), which overlaps `layout-auto`'s resize/`resolve_focus` code — sequence those
-two rather than running them together.
+- **`focus-per-button`** reworks the focus model in `ui_state.rs` (lattice cell →
+  button index). It now also has to coexist with `layout-auto`'s `auto_select` /
+  `resolve_focus` code in the same file — read those before starting. With three
+  shape-distinct pads shipped, one-press traversal of spans (wide `=`, tall `=`)
+  is more noticeable, so this is the highest daily-value UX follow-up.
+- **`rainbow-mode`** / **`quick-input`** are independent features living mostly in
+  `ui.rs`; either can run alongside a layout task. rainbow-mode's animation shares
+  the web-time clock concern with `web-ratzilla`.

@@ -5,6 +5,14 @@
 
 use std::collections::HashMap;
 
+/// Fixed on-screen size of one lattice cell (columns × rows) and the height of
+/// the display box above the grid. Both the renderer ([`crate::ui`]) and the
+/// shape-fit heuristic ([`Keypad::fit_score`]) size pads from these, so the
+/// panel geometry has a single source of truth.
+pub const CELL_W: u16 = 7;
+pub const CELL_H: u16 = 5;
+pub const DISPLAY_H: u16 = 4;
+
 /// A button occupying a rectangular region of the lattice. `(row, col)` is its
 /// top-left (anchor) cell; a plain key is `1×1`, a wide `0` is `1×2`, a tall `=`
 /// is `2×1`.
@@ -38,17 +46,29 @@ const STANDARD: &[&[&str]] = &[
     &["⌫", "0", ".", "="],
 ];
 
-/// A taller, spanning pad with the same key set as `standard`, laid out over six
-/// rows: a wide `0` (`1×2`), a wide `+` (`1×3`), and a tall `=` (`2×1`). Ships
-/// alongside `standard` so the layout registry has something to switch to — and
-/// so cell-spanning is finally exercised on a real pad, not just in tests.
+/// A **tall, narrow** pad (7 rows × 3 cols): the standard key set stacked into
+/// three columns, with a wide `=` (`1×2`) on the bottom row. Its portrait aspect
+/// ratio makes it the best fit for a narrow-tall terminal (see
+/// [`Keypad::fit_score`]); it also exercises a horizontal span on a real pad.
 const TALL: &[&[&str]] = &[
-    &["C", "⌫", "(", ")"],
-    &["7", "8", "9", "÷"],
-    &["4", "5", "6", "×"],
-    &["1", "2", "3", "-"],
-    &["0", "0", ".", "="],
-    &["+", "+", "+", "="],
+    &["C", "⌫", "÷"],
+    &["(", ")", "×"],
+    &["7", "8", "9"],
+    &["4", "5", "6"],
+    &["1", "2", "3"],
+    &["0", ".", "-"],
+    &["=", "=", "+"],
+];
+
+/// A **wide, short** pad (3 rows × 7 cols): the numeric keypad as a 3×3 block on
+/// the left, operators and editing keys to the right, and a tall `=` (`2×1`)
+/// anchoring the right edge. Its landscape aspect ratio makes it the best fit for
+/// a wide-short terminal (see [`Keypad::fit_score`]); it exercises a vertical
+/// span, the row-span counterpart to `TALL`'s wide `=`.
+const WIDE: &[&[&str]] = &[
+    &["7", "8", "9", "÷", "C", "(", ")"],
+    &["4", "5", "6", "×", "-", "⌫", "="],
+    &["1", "2", "3", "0", ".", "+", "="],
 ];
 
 impl Keypad {
@@ -58,9 +78,14 @@ impl Keypad {
         compile(STANDARD, "=")
     }
 
-    /// The tall/spanning pad (see [`TALL`]). Homes focus on `"="`.
+    /// The tall, narrow pad (see [`TALL`]). Homes focus on `"="`.
     pub fn tall() -> Self {
         compile(TALL, "=")
+    }
+
+    /// The wide, short pad (see [`WIDE`]). Homes focus on `"="`.
+    pub fn wide() -> Self {
+        compile(WIDE, "=")
     }
 
     pub fn rows(&self) -> usize {
@@ -101,6 +126,34 @@ impl Keypad {
     /// resolved from a label at compile time.
     pub fn default_focus(&self) -> (usize, usize) {
         self.default_focus
+    }
+
+    /// A shape-fit score for a terminal of `w`×`h` cells: **higher means a
+    /// better fit**, and the scores across pads must be **totally ordered** so
+    /// [`crate::ui_state::UiState`]'s selector can take a unique maximum.
+    ///
+    /// Contract for whatever scoring you choose:
+    /// - A pad that **can't physically fit** — the terminal is narrower than
+    ///   `cols * CELL_W` or shorter than `rows * CELL_H + DISPLAY_H` — must score
+    ///   *below every pad that fits*, so a fitting pad is always preferred. When
+    ///   *nothing* fits, the least-overflowing pad should still come out on top.
+    /// - Among pads that fit, prefer the one whose **shape best matches** the
+    ///   terminal: a portrait (narrow-tall) terminal should favour the tall pad,
+    ///   a landscape (wide-short) one the wide pad, and a squarish terminal the
+    ///   standard pad. Comparing the pad's aspect ratio to the terminal's — e.g.
+    ///   `need_h * w` vs `h * need_w`, to stay in integers — is one way.
+    ///
+    /// The selector breaks ties toward the earliest pad (standard), so an exact
+    /// tie is safe.
+    pub fn fit_score(&self, w: u16, h: u16) -> i32 {
+        let (w, h) = (w as i32, h as i32);
+        let need_w = self.cols as i32 * CELL_W as i32;
+        let need_h = self.rows as i32 * CELL_H as i32 + DISPLAY_H as i32;
+        if w < need_w || h < need_h {
+            let overflow = (need_w - w).max(0) + (need_h - h).max(0);
+            return -1_000_000_000 - overflow;
+        }
+        -(need_h * w - h * need_w).abs()
     }
 }
 
@@ -231,15 +284,39 @@ mod tests {
     #[test]
     fn tall_pad_spans_and_covers() {
         let k = Keypad::tall();
-        assert_eq!((k.rows(), k.cols()), (6, 4));
-        // wide 0 (1×2) and tall = (2×1) — the real-pad exercise of spanning.
-        let zero = k.button(k.button_index_at(4, 0));
-        assert_eq!((zero.label, zero.row_span, zero.col_span), ("0", 1, 2));
-        assert_eq!(k.button_index_at(4, 0), k.button_index_at(4, 1));
-        let eq = k.button(k.button_index_at(4, 3));
-        assert_eq!((eq.label, eq.row_span, eq.col_span), ("=", 2, 1));
-        assert_eq!(k.button_index_at(4, 3), k.button_index_at(5, 3));
+        assert_eq!((k.rows(), k.cols()), (7, 3));
+        // wide = (1×2) on the bottom row — a horizontal span on a real pad.
+        let eq = k.button(k.button_index_at(6, 0));
+        assert_eq!((eq.label, eq.row_span, eq.col_span), ("=", 1, 2));
+        assert_eq!(k.button_index_at(6, 0), k.button_index_at(6, 1));
         assert_eq!(k.default_focus(), k.position_of("=").unwrap());
+    }
+
+    #[test]
+    fn wide_pad_spans_and_covers() {
+        let k = Keypad::wide();
+        assert_eq!((k.rows(), k.cols()), (3, 7));
+        // tall = (2×1) anchoring the right edge — a vertical span on a real pad,
+        // the row-span counterpart to the tall pad's wide `=`.
+        let eq = k.button(k.button_index_at(1, 6));
+        assert_eq!((eq.label, eq.row_span, eq.col_span), ("=", 2, 1));
+        assert_eq!(k.button_index_at(1, 6), k.button_index_at(2, 6));
+        assert_eq!(k.default_focus(), k.position_of("=").unwrap());
+    }
+
+    #[test]
+    fn fit_score_ranks_by_shape() {
+        let (std, tall, wide) = (Keypad::standard(), Keypad::tall(), Keypad::wide());
+        // Narrow-tall terminal: the tall pad fits best; the wide pad can't fit at
+        // this width, so it must rank below the standard pad (which does fit).
+        assert!(tall.fit_score(30, 45) > std.fit_score(30, 45));
+        assert!(std.fit_score(30, 45) > wide.fit_score(30, 45));
+        // Wide-short terminal: the wide pad is the best shape match.
+        assert!(wide.fit_score(70, 40) > std.fit_score(70, 40));
+        assert!(wide.fit_score(70, 40) > tall.fit_score(70, 40));
+        // Squarish terminal: the standard pad matches best.
+        assert!(std.fit_score(40, 40) > tall.fit_score(40, 40));
+        assert!(std.fit_score(40, 40) > wide.fit_score(40, 40));
     }
 
     #[test]
