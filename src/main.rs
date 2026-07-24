@@ -68,6 +68,11 @@ fn install_panic_hook() {
 }
 
 fn run(terminal: &mut Tui, app: &mut App, ui: &mut UiState) -> Result<()> {
+    // Seed the shape-appropriate pad from the initial terminal size before the
+    // first draw — auto-selection otherwise only fires on `Event::Resize`, which
+    // doesn't arrive at startup.
+    let size = terminal.size()?;
+    ui.auto_select(size.width, size.height);
     while !app.should_quit {
         // Expire any press flash before drawing; the 100ms poll below paces
         // this, so a flash clears ~1-2 ticks after the key (a brief blink).
@@ -101,6 +106,14 @@ fn handle_event(event: Event, app: &mut App, ui: &mut UiState) {
                 activate(app, ui, action);
             }
         }
+        return;
+    }
+    // A terminal resize re-picks the shape-appropriate pad (unless the user has
+    // pinned one with Tab). Like copy and focus moves, it's a UI-only side effect
+    // routed here at the I/O boundary, not an `Action`. crossterm reports the new
+    // size as (columns, rows).
+    if let Event::Resize(cols, rows) = event {
+        ui.auto_select(cols, rows);
         return;
     }
     // A bracketed paste arrives as one (or, for large pastes, more than one)
@@ -140,6 +153,10 @@ fn handle_event(event: Event, app: &mut App, ui: &mut UiState) {
             // UI-only side effect (no calculator state changes), so it's routed
             // here at the I/O boundary rather than through an `Action`.
             KeyCode::Tab => ui.cycle_layout(),
+            // Clear a manual pad override and resume automatic shape-based
+            // selection for the current terminal size. The counterpart to Tab:
+            // Tab pins, `a` un-pins.
+            KeyCode::Char('a') | KeyCode::Char('A') => ui.resume_auto(),
             // Copy the result to the clipboard (vim-style yank; Ctrl-C is taken
             // by quit in raw mode). A no-op unless a result is on screen.
             KeyCode::Char('y') | KeyCode::Char('Y') => do_copy(app, ui),
@@ -336,6 +353,43 @@ mod tests {
             &mut ui,
         );
         assert_eq!(ui.layout_index(), 1);
+    }
+
+    #[test]
+    fn resize_respects_pinned_override() {
+        // Tab pins a pad; a subsequent resize must not move off it. (The auto path
+        // itself is unit-tested in ui_state; here we check the Resize event is
+        // routed and the override honored.)
+        let mut app = App::new();
+        let mut ui = UiState::new();
+        handle_event(
+            Event::Key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)),
+            &mut app,
+            &mut ui,
+        );
+        assert_eq!(ui.layout_index(), 1); // pinned to tall
+        handle_event(Event::Resize(200, 200), &mut app, &mut ui);
+        assert_eq!(ui.layout_index(), 1); // unchanged
+        assert_eq!(ui.override_layout(), Some(1));
+    }
+
+    #[test]
+    fn a_key_resumes_auto() {
+        // `a` is the counterpart to Tab: it clears the manual override.
+        let mut app = App::new();
+        let mut ui = UiState::new();
+        handle_event(
+            Event::Key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)),
+            &mut app,
+            &mut ui,
+        );
+        assert_eq!(ui.override_layout(), Some(1));
+        handle_event(
+            Event::Key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE)),
+            &mut app,
+            &mut ui,
+        );
+        assert_eq!(ui.override_layout(), None);
     }
 
     #[test]

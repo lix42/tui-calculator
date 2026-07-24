@@ -5,15 +5,8 @@ use ratatui::text::Line;
 use ratatui::widgets::{Block, BorderType, Padding, Paragraph};
 
 use crate::app::App;
+use crate::layout::{CELL_H, CELL_W, DISPLAY_H};
 use crate::ui_state::UiState;
-
-/// Fixed on-screen size of one lattice cell (columns × rows) and the height of
-/// the display box above the grid. The panel is sized from these and the active
-/// keypad's dimensions, so a differently-shaped pad still centers correctly —
-/// there are no baked-in grid dimensions here.
-const CELL_W: u16 = 7;
-const CELL_H: u16 = 5;
-const DISPLAY_H: u16 = 4;
 
 pub fn draw(frame: &mut Frame, app: &App, ui: &mut UiState) {
     let grid_w = ui.keypad().cols() as u16 * CELL_W;
