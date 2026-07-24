@@ -460,12 +460,28 @@ precedence. 12 new tests (92 total), `cargo clippy` clean.
   `select_for` has a unique max. **Two tiers:** a pad that overflows the terminal
   (`w < cols*CELL_W || h < rows*CELL_H + DISPLAY_H`) returns `-1_000_000_000 -
   overflow` — below every fitting pad, and least-overflow wins when *nothing*
-  fits; a fitting pad scores `-(need_h*w - h*need_w).abs()`, the integer
-  cross-multiplied aspect distance (closest shape wins, no floats). **The overflow
-  gate is load-bearing**, not decoration: without it a landscape terminal 1 column
-  too narrow for `wide` (e.g. 48×29) still scores `wide` best on aspect and picks
-  a pad that can't fit while `standard` fits — `centered_panel` would then clip
-  the last button column. Regression test: `select_for(48, 29) == 0`.
+  fits; a fitting pad scores the integer cross-multiplied aspect distance
+  `-(|need_h*w - h*need_w| * SCALE / need_w)` (closest shape wins, no floats).
+  **The overflow gate is load-bearing**, not decoration: without it a landscape
+  terminal 1 column too narrow for `wide` (e.g. 48×29) still scores `wide` best on
+  aspect and picks a pad that can't fit while `standard` fits — `centered_panel`
+  would then clip the last button column. Regression test: `select_for(48, 29) == 0`.
+- **The `/ need_w` normalisation is equally load-bearing** — caught by Codex on PR
+  #19, after the gate fix. The cross-product `|need_h*w - h*need_w|` is the true
+  ratio distance scaled by `need_w * w`. `w` is shared by every pad and cancels out
+  of the ranking, but `need_w` is per-pad (28 / 21 / 49), so leaving it in penalises
+  a pad in proportion to its own width and **biases selection toward narrow pads**.
+  At 60×40 all three pads fit and `wide` is the closest ratio match (0.39 vs the
+  terminal's 0.67; standard is 1.04), yet the unnormalised score ranked standard
+  first (-620) over wide (-820) — a landscape terminal getting the squarish pad.
+  Dividing by `need_w` flips it (-16.7 vs -22.1). `SCALE = 1024` keeps resolution
+  through the integer division; the arithmetic moved to `i64` so the scaled product
+  can't overflow (worst case ≈1.6e8, still far above the -1e9 overflow tier and
+  well inside `i32`). Regression tests: `fit_score_normalises_away_pad_width` and
+  `select_for(60, 40) == 2`. **Lesson:** cross-multiplication is valid for *ordering
+  two ratios against each other*, but a per-pad *score* needs a common denominator —
+  the four original acceptance shapes (30×45, 70×40, 40×40, 48×29) all happened to
+  agree either way, so only a case where every pad fits could expose it.
 - **Cell geometry moved to `layout.rs`.** `CELL_W`/`CELL_H`/`DISPLAY_H` were
   `ui.rs`-private; `fit_score` needs them to know physical fit, so they're now
   `pub const` in `layout.rs` (single source of truth) and `ui.rs` imports them.

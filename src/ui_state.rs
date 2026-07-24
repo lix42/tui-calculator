@@ -386,6 +386,9 @@ mod tests {
         // standard pad wins. Regression guard for the "best aspect but doesn't
         // fit" path.
         assert_eq!(ui.select_for(48, 29), 0);
+        // Every pad fits here, so the choice rests purely on the ratio distance —
+        // which only ranks correctly once it's normalised by each pad's own width.
+        assert_eq!(ui.select_for(60, 40), 2);
     }
 
     #[test]

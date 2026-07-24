@@ -132,28 +132,40 @@ impl Keypad {
     /// better fit**, and the scores across pads must be **totally ordered** so
     /// [`crate::ui_state::UiState`]'s selector can take a unique maximum.
     ///
-    /// Contract for whatever scoring you choose:
+    /// Two tiers:
     /// - A pad that **can't physically fit** — the terminal is narrower than
-    ///   `cols * CELL_W` or shorter than `rows * CELL_H + DISPLAY_H` — must score
+    ///   `cols * CELL_W` or shorter than `rows * CELL_H + DISPLAY_H` — scores
     ///   *below every pad that fits*, so a fitting pad is always preferred. When
-    ///   *nothing* fits, the least-overflowing pad should still come out on top.
-    /// - Among pads that fit, prefer the one whose **shape best matches** the
-    ///   terminal: a portrait (narrow-tall) terminal should favour the tall pad,
-    ///   a landscape (wide-short) one the wide pad, and a squarish terminal the
-    ///   standard pad. Comparing the pad's aspect ratio to the terminal's — e.g.
-    ///   `need_h * w` vs `h * need_w`, to stay in integers — is one way.
+    ///   *nothing* fits, the least-overflowing pad still comes out on top.
+    /// - Among pads that fit, the one whose **aspect ratio is closest** to the
+    ///   terminal's wins: a portrait (narrow-tall) terminal favours the tall pad,
+    ///   a landscape (wide-short) one the wide pad, a squarish terminal the
+    ///   standard pad.
+    ///
+    /// The ratio distance `|need_h/need_w - h/w|` is kept in integers by
+    /// cross-multiplying to `|need_h * w - h * need_w|` — but that product is the
+    /// true distance scaled by `need_w * w`. `w` is shared by every pad and so
+    /// cancels out of the ranking; **`need_w` does not**, and dividing it back out
+    /// is load-bearing: without it a pad is penalised in proportion to its own
+    /// width, which biases selection toward narrow pads. (At 60×40 all three pads
+    /// fit and `wide` is the closest in ratio, but the unnormalised score ranks
+    /// `standard` first.) `SCALE` keeps resolution through the integer division;
+    /// the arithmetic runs in `i64` so the scaled product can't overflow.
     ///
     /// The selector breaks ties toward the earliest pad (standard), so an exact
     /// tie is safe.
     pub fn fit_score(&self, w: u16, h: u16) -> i32 {
-        let (w, h) = (w as i32, h as i32);
-        let need_w = self.cols as i32 * CELL_W as i32;
-        let need_h = self.rows as i32 * CELL_H as i32 + DISPLAY_H as i32;
+        /// Fixed-point resolution for the normalised ratio distance.
+        const SCALE: i64 = 1024;
+
+        let (w, h) = (w as i64, h as i64);
+        let need_w = self.cols as i64 * CELL_W as i64;
+        let need_h = self.rows as i64 * CELL_H as i64 + DISPLAY_H as i64;
         if w < need_w || h < need_h {
             let overflow = (need_w - w).max(0) + (need_h - h).max(0);
-            return -1_000_000_000 - overflow;
+            return (-1_000_000_000 - overflow) as i32;
         }
-        -(need_h * w - h * need_w).abs()
+        (-((need_h * w - h * need_w).abs() * SCALE / need_w)) as i32
     }
 }
 
@@ -317,6 +329,18 @@ mod tests {
         // Squarish terminal: the standard pad matches best.
         assert!(std.fit_score(40, 40) > tall.fit_score(40, 40));
         assert!(std.fit_score(40, 40) > wide.fit_score(40, 40));
+    }
+
+    #[test]
+    fn fit_score_normalises_away_pad_width() {
+        // 60×40: all three pads fit, and `wide` is the closest ratio match
+        // (49×19 → 0.39 vs the terminal's 0.67; standard's 28×29 is 1.04). Scoring
+        // the raw cross-product instead of the normalised distance penalises a pad
+        // in proportion to its own width and would rank the narrower `standard`
+        // first — see `fit_score`.
+        let (std, tall, wide) = (Keypad::standard(), Keypad::tall(), Keypad::wide());
+        assert!(wide.fit_score(60, 40) > std.fit_score(60, 40));
+        assert!(wide.fit_score(60, 40) > tall.fit_score(60, 40));
     }
 
     #[test]
