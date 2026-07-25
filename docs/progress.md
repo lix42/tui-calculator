@@ -503,6 +503,48 @@ precedence. 12 new tests (92 total), `cargo clippy` clean.
 - **Implementation split:** `fit_score`'s body was written by the user; the review
   caught a missing overflow gate (aspect-only) and an unnecessary cast, both fixed.
 
+### focus-per-button — `src/layout.rs`, `src/ui_state.rs`, `src/main.rs`
+
+**Status:** done · 2026-07-24
+
+Grid navigation now steps one *button* per key press, not one lattice cell, so
+crossing a spanning button (tall pad's wide `=`, wide pad's tall `=`) costs a
+single press. 100 tests (was 92 at layout-auto), `cargo clippy` clean.
+
+- **Focus stayed a lattice cell (user's design call).** The task file floated
+  "lattice cell → button index"; we kept `focus: (usize, usize)` and instead made
+  `move_focus` skip the current button's covered cells. The deciding case was the
+  wide pad's tall `=`: entering it sideways from `+` at (2,5), the return trip must
+  land back on `+`. Resting on the **entry cell** (2,6) makes that reversible;
+  snapping to the button's anchor (1,6) would send Left to `⌫` instead. So *within
+  a pad* focus may sit on a non-anchor span cell — deliberately unlike the
+  anchor-snap `resolve_focus` still does on a pad *switch*.
+- **`Dir` enum + `Keypad::step` (both in `layout.rs`, pure).** `move_focus(dr, dc)`
+  became `move_focus(Dir)`; `focus_delta` in `main.rs` became `focus_dir ->
+  Option<Dir>`. A `Dir` (not a delta pair) makes the "unit, single-axis step" rule
+  structural — the skip-walk is only correct for unit steps, so a diagonal or
+  stride-2 delta is now unrepresentable rather than a comment. `Keypad::step(row,
+  col, dir) -> Option<(usize,usize)>` is the pure one-cell step; the free
+  `next_button_cell` in `ui_state.rs` loops it, skipping cells owned by the start
+  button, until it lands on a different button or runs off the edge.
+- **`step` returns `Option`, never clamps — load-bearing.** A clamped edge step
+  returns the same cell forever, so `next_button_cell`'s `while let Some` would
+  spin. `None` at the edge is what terminates the walk (`move_focus` then no-ops).
+  Test `move_focus_within_a_span_is_a_noop_at_the_edge` guards the spin case.
+- **`step` body was the user's contribution (learning mode).** First cut clamped
+  and had `usize` underflow (`row - 1` at row 0) plus an off-by-one bound; corrected
+  to a total match over `Dir` (no catch-all) with `checked_add_signed` + a single
+  `< rows/cols` bounds check. The total match means a future `Dir` variant is a
+  compile error here, matching the codebase's "total match" discipline.
+- **`/ship` review actions.** Type-design review flagged the original guarded match
+  (`Dir::Up if row > 0 => …`, `_ => None`) as opting out of exhaustiveness → moved
+  to the total-match form above. Comment review caught both `step` and `Dir` docs
+  naming `move_focus` as the loop-holder when it's `next_button_cell` → fixed.
+  Test review found two matrix corners (horizontal span crossed from its *far*
+  cell; landing onto a horizontal span perpendicular) → added
+  `crossing_a_horizontal_span_from_its_far_cell_takes_one_press` and
+  `entering_a_horizontal_span_is_reversible`.
+
 ## Known Issues / Deferred
 
 - **`Action::Op(char)` is a convention-enforced invariant (follow-up to
@@ -525,16 +567,11 @@ precedence. 12 new tests (92 total), `cargo clippy` clean.
 
 ## Next Task
 
-The whole layout arc (`layout-config` → `layout-registry` → `layout-auto`) is now
-done. Remaining executable tasks (all depend only on the already-done
-`layout-config`): `focus-per-button`, `rainbow-mode`, `quick-input`; `web-ratzilla`
+The whole layout arc (`layout-config` → `layout-registry` → `layout-auto`) plus
+`focus-per-button` are now done. Remaining executable tasks (all depend only on
+the already-done `layout-config`): `rainbow-mode`, `quick-input`; `web-ratzilla`
 is the large platform port, sequenced last.
 
-- **`focus-per-button`** reworks the focus model in `ui_state.rs` (lattice cell →
-  button index). It now also has to coexist with `layout-auto`'s `auto_select` /
-  `resolve_focus` code in the same file — read those before starting. With three
-  shape-distinct pads shipped, one-press traversal of spans (wide `=`, tall `=`)
-  is more noticeable, so this is the highest daily-value UX follow-up.
 - **`rainbow-mode`** / **`quick-input`** are independent features living mostly in
   `ui.rs`; either can run alongside a layout task. rainbow-mode's animation shares
   the web-time clock concern with `web-ratzilla`.

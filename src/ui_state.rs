@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 
 use ratatui::layout::{Position, Rect};
 
-use crate::layout::Keypad;
+use crate::layout::{Dir, Keypad};
 
 /// How long a button stays in its "pressed" look after activation. Terminals
 /// have no key-release event, so the press is shown as a brief flash that the
@@ -152,11 +152,20 @@ impl UiState {
         self.button_rects = vec![Rect::ZERO; self.layouts[self.layout].button_count()];
     }
 
-    pub fn move_focus(&mut self, dr: i32, dc: i32) {
-        let rows = self.keypad().rows() as i32;
-        let cols = self.keypad().cols() as i32;
-        self.focus.0 = (self.focus.0 as i32 + dr).clamp(0, rows - 1) as usize;
-        self.focus.1 = (self.focus.1 as i32 + dc).clamp(0, cols - 1) as usize;
+    /// Move focus one **button** in `dir`, not one lattice cell.
+    ///
+    /// The distinction only shows up on a spanning button traversed along its
+    /// own span axis: a per-cell step from the tall pad's wide `=` (cells
+    /// `(6,0)`–`(6,1)`) lands back on `=`, so crossing it costs two presses. This
+    /// skips every cell the current button owns, so it costs one.
+    ///
+    /// Focus is left where it is when the lattice edge is reached without finding
+    /// another button — moving right from the rightmost column is a no-op, not a
+    /// wrap.
+    pub fn move_focus(&mut self, dir: Dir) {
+        if let Some(cell) = next_button_cell(self.keypad(), self.focus, dir) {
+            self.focus = cell;
+        }
     }
 
     /// The label of the focused button. `&'static` because labels are `'static`,
@@ -286,14 +295,41 @@ impl UiState {
     }
 }
 
+/// Walk from `from` in direction `dir` until reaching a cell owned by a
+/// *different* button than the one covering `from`, and return that cell.
+/// `None` if the lattice edge arrives first — i.e. there is no next button that
+/// way.
+///
+/// This is what makes navigation per-button rather than per-cell: the cells a
+/// spanning button owns are skipped in a single move. The cell returned is the
+/// one focus *entered* through, deliberately **not** the destination button's
+/// anchor — resting on the entry cell is what makes the move reversible. On the
+/// wide pad, `"+"` at `(2,5)` → Right lands on `=`'s lower cell `(2,6)`, so Left
+/// steps back to `(2,5)`; snapping to `=`'s anchor `(1,6)` instead would return
+/// the user to `"⌫"`, a different key than they came from.
+fn next_button_cell(pad: &Keypad, from: (usize, usize), dir: Dir) -> Option<(usize, usize)> {
+    let start = pad.button_index_at(from.0, from.1);
+    let mut cell = from;
+    while let Some(next) = pad.step(cell.0, cell.1, dir) {
+        if pad.button_index_at(next.0, next.1) != start {
+            return Some(next);
+        }
+        cell = next;
+    }
+    None
+}
+
 /// Choose the focus cell for `pad` when switching to it, carrying the old cell
 /// `(row, col)` over when possible.
 ///
 /// Policy ("preserve, else default"): if `(row, col)` is a valid cell on `pad`,
 /// keep the user roughly where they were — but snap to the **anchor** of the
-/// button covering that cell, so focus never lands on a non-anchor cell of a
-/// spanning button. If the old cell is out of `pad`'s bounds, fall back to
-/// `pad.default_focus()`.
+/// button covering that cell. If the old cell is out of `pad`'s bounds, fall
+/// back to `pad.default_focus()`.
+///
+/// The anchor snap applies to a *pad switch* only. Within a pad, focus may rest
+/// on any cell of a spanning button — [`next_button_cell`] leaves it on the cell
+/// it entered through, which is what keeps navigation reversible.
 fn resolve_focus(old: (usize, usize), pad: &Keypad) -> (usize, usize) {
     let (row, col) = old;
     if row >= pad.rows() || col >= pad.cols() {
@@ -310,13 +346,116 @@ mod tests {
     use crate::layout::Keypad;
 
     #[test]
-    fn move_focus_clamps() {
-        let mut ui = UiState::new();
+    fn move_focus_stops_at_the_edges() {
+        // Off the top-left corner and off the bottom-right corner: no wrap, no
+        // panic — focus just stays put.
+        let mut ui = UiState::new(); // standard, 5×4
         ui.focus = (0, 0);
-        ui.move_focus(-5, -5);
+        ui.move_focus(Dir::Up);
         assert_eq!(ui.focus, (0, 0));
-        ui.move_focus(99, 99);
+        ui.move_focus(Dir::Left);
+        assert_eq!(ui.focus, (0, 0));
+        ui.focus = (4, 3);
+        ui.move_focus(Dir::Down);
         assert_eq!(ui.focus, (4, 3));
+        ui.move_focus(Dir::Right);
+        assert_eq!(ui.focus, (4, 3));
+    }
+
+    #[test]
+    fn move_focus_steps_one_button_on_a_plain_pad() {
+        // Every standard-pad key is 1×1, so per-button and per-cell coincide —
+        // the baseline the spanning cases below deviate from.
+        let mut ui = UiState::new();
+        ui.focus = (2, 1); // "5"
+        ui.move_focus(Dir::Left);
+        assert_eq!(ui.focused_label(), "4");
+        ui.move_focus(Dir::Up);
+        assert_eq!(ui.focused_label(), "7");
+        ui.move_focus(Dir::Right);
+        assert_eq!(ui.focused_label(), "8");
+        ui.move_focus(Dir::Down);
+        assert_eq!(ui.focused_label(), "5");
+    }
+
+    #[test]
+    fn crossing_a_horizontal_span_takes_one_press() {
+        // The regression this task exists for. On the tall pad the bottom row is
+        // ["=", "=", "+"], so a per-*cell* step right from ="s anchor (6, 0)
+        // lands on (6, 1) — still "=" — and reaching "+" costs two presses.
+        let mut ui = UiState::new();
+        ui.set_layout(1); // tall
+        ui.focus = (6, 0); // "=" anchor
+        ui.move_focus(Dir::Right);
+        assert_eq!(ui.focused_label(), "+"); // skipped ="s second cell
+        assert_eq!(ui.focus, (6, 2)); // and landed on "+"'s own cell
+    }
+
+    #[test]
+    fn crossing_a_horizontal_span_from_its_far_cell_takes_one_press() {
+        // The other start-cell for the horizontal span: entering "=" from the
+        // left leaves focus on its *far* cell (6, 1), and one more Right must
+        // clear the whole button to "+". Guards the skip loop against an
+        // off-by-one that only shows from a non-anchor start.
+        let mut ui = UiState::new();
+        ui.set_layout(1); // tall
+        ui.focus = (6, 1); // ="s second (non-anchor) cell
+        ui.move_focus(Dir::Right);
+        assert_eq!(ui.focused_label(), "+");
+        assert_eq!(ui.focus, (6, 2));
+    }
+
+    #[test]
+    fn entering_a_horizontal_span_is_reversible() {
+        // The row-span counterpart to `entering_a_span_is_reversible`: dropping
+        // onto the tall pad's wide "=" from above lands on the entry cell (6, 1),
+        // not the anchor (6, 0), so Up returns to "." rather than veering to "0".
+        let mut ui = UiState::new();
+        ui.set_layout(1); // tall
+        ui.focus = (5, 1); // "." (row ["0", ".", "-"])
+        ui.move_focus(Dir::Down);
+        assert_eq!(ui.focused_label(), "=");
+        assert_eq!(ui.focus, (6, 1)); // entry cell, not the anchor (6, 0)
+        ui.move_focus(Dir::Up);
+        assert_eq!(ui.focused_label(), "."); // back where we started
+    }
+
+    #[test]
+    fn crossing_a_vertical_span_takes_one_press() {
+        // The row-span counterpart: on the wide pad "=" is 2×1 at col 6 spanning
+        // rows 1–2. Stepping up from its anchor must clear the whole button.
+        let mut ui = UiState::new();
+        ui.set_layout(2); // wide
+        ui.focus = (2, 6); // ="s lower cell
+        ui.move_focus(Dir::Up);
+        assert_eq!(ui.focused_label(), ")"); // (0, 6), skipping (1, 6)
+    }
+
+    #[test]
+    fn entering_a_span_is_reversible() {
+        // Focus rests on the cell it entered a spanning button through, not the
+        // button's anchor, so the move undoes exactly. Snapping to ="s anchor
+        // (1, 6) here would send the return trip to "⌫" instead of "+".
+        let mut ui = UiState::new();
+        ui.set_layout(2); // wide
+        ui.focus = (2, 5); // "+"
+        ui.move_focus(Dir::Right);
+        assert_eq!(ui.focused_label(), "=");
+        assert_eq!(ui.focus, (2, 6)); // the entry cell, not the anchor (1, 6)
+        ui.move_focus(Dir::Left);
+        assert_eq!(ui.focused_label(), "+"); // back where we started
+    }
+
+    #[test]
+    fn move_focus_within_a_span_is_a_noop_at_the_edge() {
+        // From ="s lower cell on the wide pad, Down would only reach ="s own
+        // cells before running off the lattice — so focus stays, rather than the
+        // walk falling off the end or spinning.
+        let mut ui = UiState::new();
+        ui.set_layout(2); // wide
+        ui.focus = (1, 6); // ="s anchor; (2, 6) below is the same button
+        ui.move_focus(Dir::Down);
+        assert_eq!(ui.focus, (1, 6));
     }
 
     #[test]
