@@ -13,6 +13,22 @@ pub const CELL_W: u16 = 7;
 pub const CELL_H: u16 = 5;
 pub const DISPLAY_H: u16 = 4;
 
+/// A single step across the lattice: one cell, along one axis.
+///
+/// Navigation is expressed as a direction rather than a `(dr, dc)` pair because
+/// the focus walk (`next_button_cell`, reached via
+/// [`crate::ui_state::UiState::move_focus`]) steps cell-by-cell until it leaves
+/// the current button — a stride bigger than one cell, or a diagonal, would step
+/// *over* buttons instead of onto them. Encoding the unit-step rule in the type
+/// makes that unrepresentable rather than a precondition in a comment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Dir {
+    Up,
+    Down,
+    Left,
+    Right,
+}
+
 /// A button occupying a rectangular region of the lattice. `(row, col)` is its
 /// top-left (anchor) cell; a plain key is `1×1`, a wide `0` is `1×2`, a tall `=`
 /// is `2×1`.
@@ -113,6 +129,31 @@ impl Keypad {
     /// in-bounds cell.
     pub fn button_index_at(&self, row: usize, col: usize) -> usize {
         self.occupancy[row][col]
+    }
+
+    /// The cell one step from `(row, col)` in direction `dir`, or `None` if that
+    /// step would leave the lattice.
+    ///
+    /// Pure lattice geometry — it knows nothing about buttons or spans. The
+    /// caller (`next_button_cell`, via [`crate::ui_state::UiState::move_focus`])
+    /// repeats this until the cell it lands on belongs to a *different* button,
+    /// which is what turns a per-cell walk into a per-button one. Returning
+    /// `Option` rather than clamping is load-bearing for that loop: a clamped step
+    /// at the edge would return the same cell forever and spin.
+    pub fn step(&self, row: usize, col: usize, dir: Dir) -> Option<(usize, usize)> {
+        // A total match over `Dir` (no catch-all) so a new variant is a compile
+        // error here rather than a silently stuck direction; `checked_add_signed`
+        // turns a step off the top/left edge into `None` instead of underflowing,
+        // and the bounds check catches the bottom/right edge.
+        let (dr, dc): (isize, isize) = match dir {
+            Dir::Up => (-1, 0),
+            Dir::Down => (1, 0),
+            Dir::Left => (0, -1),
+            Dir::Right => (0, 1),
+        };
+        let row = row.checked_add_signed(dr)?;
+        let col = col.checked_add_signed(dc)?;
+        (row < self.rows && col < self.cols).then_some((row, col))
     }
 
     /// The anchor (top-left) cell of the button carrying `label`, or `None` if

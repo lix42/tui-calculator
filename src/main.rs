@@ -21,6 +21,7 @@ use ratatui::backend::CrosstermBackend;
 
 use action::Action;
 use app::App;
+use layout::Dir;
 use ui_state::UiState;
 
 type Tui = Terminal<CrosstermBackend<Stdout>>;
@@ -142,9 +143,9 @@ fn handle_event(event: Event, app: &mut App, ui: &mut UiState) {
         if !key
             .modifiers
             .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
-            && let Some((dr, dc)) = focus_delta(key.code)
+            && let Some(dir) = focus_dir(key.code)
         {
-            ui.move_focus(dr, dc);
+            ui.move_focus(dir);
             return;
         }
         match key.code {
@@ -260,14 +261,18 @@ fn key_to_action(code: KeyCode) -> Option<Action> {
     }
 }
 
-/// Maps a navigation key to a `(row_delta, col_delta)` focus move. Accepts both
-/// vim HJKL (either case) and the arrow keys; everything else is `None`.
-fn focus_delta(code: KeyCode) -> Option<(i32, i32)> {
+/// Maps a navigation key to the direction it moves focus. Accepts both vim HJKL
+/// (either case) and the arrow keys; everything else is `None`.
+///
+/// A [`Dir`] rather than a `(row, col)` delta pair: focus moves one *button* per
+/// press, which [`UiState::move_focus`] resolves by walking the lattice a cell at
+/// a time — so only unit, single-axis steps are meaningful.
+fn focus_dir(code: KeyCode) -> Option<Dir> {
     match code {
-        KeyCode::Left | KeyCode::Char('h') | KeyCode::Char('H') => Some((0, -1)),
-        KeyCode::Down | KeyCode::Char('j') | KeyCode::Char('J') => Some((1, 0)),
-        KeyCode::Up | KeyCode::Char('k') | KeyCode::Char('K') => Some((-1, 0)),
-        KeyCode::Right | KeyCode::Char('l') | KeyCode::Char('L') => Some((0, 1)),
+        KeyCode::Left | KeyCode::Char('h') | KeyCode::Char('H') => Some(Dir::Left),
+        KeyCode::Down | KeyCode::Char('j') | KeyCode::Char('J') => Some(Dir::Down),
+        KeyCode::Up | KeyCode::Char('k') | KeyCode::Char('K') => Some(Dir::Up),
+        KeyCode::Right | KeyCode::Char('l') | KeyCode::Char('L') => Some(Dir::Right),
         _ => None,
     }
 }
@@ -304,27 +309,27 @@ mod tests {
     }
 
     #[test]
-    fn nav_keys_map_to_focus_deltas() {
+    fn nav_keys_map_to_directions() {
         // Left/H, Down/J, Up/K, Right/L — vim and arrows, both cases.
-        assert_eq!(focus_delta(KeyCode::Left), Some((0, -1)));
-        assert_eq!(focus_delta(KeyCode::Char('h')), Some((0, -1)));
-        assert_eq!(focus_delta(KeyCode::Char('H')), Some((0, -1)));
-        assert_eq!(focus_delta(KeyCode::Down), Some((1, 0)));
-        assert_eq!(focus_delta(KeyCode::Char('j')), Some((1, 0)));
-        assert_eq!(focus_delta(KeyCode::Up), Some((-1, 0)));
-        assert_eq!(focus_delta(KeyCode::Char('k')), Some((-1, 0)));
-        assert_eq!(focus_delta(KeyCode::Right), Some((0, 1)));
-        assert_eq!(focus_delta(KeyCode::Char('l')), Some((0, 1)));
+        assert_eq!(focus_dir(KeyCode::Left), Some(Dir::Left));
+        assert_eq!(focus_dir(KeyCode::Char('h')), Some(Dir::Left));
+        assert_eq!(focus_dir(KeyCode::Char('H')), Some(Dir::Left));
+        assert_eq!(focus_dir(KeyCode::Down), Some(Dir::Down));
+        assert_eq!(focus_dir(KeyCode::Char('j')), Some(Dir::Down));
+        assert_eq!(focus_dir(KeyCode::Up), Some(Dir::Up));
+        assert_eq!(focus_dir(KeyCode::Char('k')), Some(Dir::Up));
+        assert_eq!(focus_dir(KeyCode::Right), Some(Dir::Right));
+        assert_eq!(focus_dir(KeyCode::Char('l')), Some(Dir::Right));
     }
 
     #[test]
-    fn non_nav_keys_have_no_delta() {
+    fn non_nav_keys_have_no_direction() {
         // Digits, operators, and other keys must fall through to activation,
         // not be swallowed as navigation.
-        assert_eq!(focus_delta(KeyCode::Char('5')), None);
-        assert_eq!(focus_delta(KeyCode::Char('+')), None);
-        assert_eq!(focus_delta(KeyCode::Enter), None);
-        assert_eq!(focus_delta(KeyCode::Char(' ')), None);
+        assert_eq!(focus_dir(KeyCode::Char('5')), None);
+        assert_eq!(focus_dir(KeyCode::Char('+')), None);
+        assert_eq!(focus_dir(KeyCode::Enter), None);
+        assert_eq!(focus_dir(KeyCode::Char(' ')), None);
     }
 
     #[test]
