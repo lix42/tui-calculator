@@ -71,14 +71,85 @@ return an **owned** `ButtonStyle` (or take the label and overlay a color) in
 rainbow mode. Simplest: keep the three presets for structure (border type,
 weight) and overlay `.fg(digit_color(d))` for digit cells when the mode is on.
 
-### Animation (optional layer)
+### Animation (a follow-up, not part of the first static pass)
 
-"May apply more animation" — e.g. cycle the hue offset over time, or pulse the
-focused cell's brightness. This needs a **wall-clock phase**. `UiState::tick`
-already runs once per loop iteration and `flash_at: Instant` already exists, so
-add an `animation_start: Instant` and derive a phase from `elapsed()`. The run
-loop polls at 100 ms, which paces a smooth-enough cycle; bump the poll rate only
-if the animation looks choppy.
+Static per-digit colors ship first (see Implementation Notes). Animation is a
+**separate, later pass** — the design below is captured so it isn't re-derived.
+
+#### Philosophy: transient effects, not an always-on phase
+
+Continuous animation reads as *busy*. So the model is **event-driven and
+quiescent by default**: nothing moves until the user does something, each effect
+is time-limited and decays, and the terminal settles back to the static palette.
+The one deliberate exception is a single, subtle **always-on breath** (on the
+display or the focused cell).
+
+This is the shape the press flash *already* has — `flash: Option<(cell)>` +
+`flash_at: Instant`, triggered at `register_press`, expired in `tick` after
+`FLASH_DURATION`. So the work is to **generalize the flash into a small effect
+model** rather than bolt on N ad-hoc timers:
+
+```rust
+struct Effect { kind: EffectKind, origin: Origin, started: Instant, duration: Duration }
+// origin is a cell (row, col) or a Dir, depending on kind.
+```
+
+Rendering derives a **per-cell intensity from `started.elapsed()`** and modulates
+the static `digit_color` on top. The press flash becomes one `EffectKind`.
+
+#### The effects and their triggers (all trigger data already exists)
+
+| Effect | Trigger | Origin | Priority | Notes |
+|---|---|---|---|---|
+| **Ripple** | any cell-mapped input (`register_press`) | pressed cell | first | radiates outward; the flash, generalized |
+| **Global hue drift** | successful `=` | none (global) | first | fire on `action == Equals && app.copy_text().is_some()`; settles back to the palette |
+| **Breath (display)** | always on | display window | first | the *lone* always-on effect; keep amplitude small |
+| **Copy / paste** | later | display area | first | different `kind`; not a grid ripple |
+| **Directional wave** | focus move (`move_focus`) | `Dir` + destination cell | **deferred** | UX-uncertain — see below |
+| **Breath (focused cell)** | always on | focused cell | **deferred** | UX-uncertain — see below |
+
+**Sequencing — build the `first` effects, then trial the two deferred ones.**
+The two focus-triggered effects are held back on purpose: focus moves are
+frequent (every `hjkl`/arrow), so a **directional wave on every move** and a
+**breath on the focused cell** are the most likely to feel busy or distracting.
+They stay in the model (same `Effect` abstraction, no extra plumbing) but land
+*after* the others are in and tuned, so they can be trialled against a working
+baseline and dropped cheaply if they don't earn their place. The always-on
+breath, if kept at all, starts on the **display window** — the calmer location —
+before the focused-cell variant is even attempted.
+
+**"No cell → no ripple" is free.** Ripple keys off `register_press`'s cell, and
+paste bypasses `register_press` entirely (`handle_event` routes it to
+`app.apply_str`) while copy fires from the display affordance. So paste and copy
+produce no grid ripple *without any special-casing* — the existing input funnel
+already draws that line. The `=` success peek at `App` is read-only (ui.rs
+already reads `&App`), so it doesn't leak state into `App`.
+
+#### Concurrency: latest-wins, with composing ripples as a stretch goal
+
+Baseline is **latest-wins**: a new effect clears the current one, so user input
+during a hue drift cancels the drift. **Stretch goal: ripples compose** — rapid
+input leaves overlapping ripples instead of each cancelling the last.
+
+Model the effect state as a **small bounded collection** so both are just
+*insertion policies* on one container, not different data structures:
+- a non-ripple effect (wave, drift) clears the collection and inserts one
+  (latest-wins);
+- a ripple **replaces** (baseline) or **appends up to a cap** (stretch).
+
+The cap keeps held-down input from spawning unbounded ripples. Designing the
+container this way up front makes the stretch a one-line policy flip.
+
+#### Prerequisites and pacing
+
+- Add an `animation_start: Instant` (the wall-clock phase the breath and drift
+  read). The run loop already `draw`s every iteration with a 100 ms `poll` cap,
+  so it repaints at ~10 fps *unconditionally* — transient effects cost nothing
+  extra. The breath is what commits the loop to staying awake; if a genuinely
+  quiet idle terminal ever matters, gate the redraw on "an effect is active or an
+  event arrived," and the breath becomes the thing keeping it running.
+- `digit_color` stays a **pure `(d) -> Color`**; effects modulate on top of it.
+  Only the global drift ever needs a phase, and only while it's running.
 
 > **Cross-cutting note:** the time source here is the same gap `web-ratzilla`
 > hits — `std::time::Instant` **panics on `wasm32-unknown-unknown`**. If rainbow

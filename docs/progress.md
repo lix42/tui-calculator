@@ -545,6 +545,50 @@ single press. 100 tests (was 92 at layout-auto), `cargo clippy` clean.
   `crossing_a_horizontal_span_from_its_far_cell_takes_one_press` and
   `entering_a_horizontal_span_is_reversible`.
 
+### rainbow-mode — `src/ui.rs`, `src/ui_state.rs`, `src/main.rs`, `Cargo.toml`
+
+**Status:** done · 2026-07-28 (static color pass; animation intentionally deferred)
+
+Per-glyph color mode for both the display and the button grid, toggled at runtime.
+120 tests (was 115 before the ship review added 5), `cargo clippy`/`fmt` clean.
+
+- **Presentation-only, on `UiState` not `App`.** `ColorMode` (Mono|Rainbow) and
+  `Theme` (Dark|Light) are rendering state — they change no calculator state — so
+  they live on `UiState` and are toggled by `r`/`t` routed at the I/O boundary in
+  `main.rs`, exactly like the Tab/`a` pad side effects. `App` still hands back plain
+  strings; `ui.rs` decides the color.
+- **`glyph_color` is the single source of truth** for both surfaces, built in
+  **HSLuv** via ratatui's `palette` feature (added to `Cargo.toml`) so the ten digit
+  hues read as evenly bright — a naive HSL palette makes yellow glare and blue go
+  muddy on a dark background. Digits `0`–`9` on a 36° grid; operators/parens
+  hand-picked *off* that grid so an operator between two digits can't share a
+  neighbour's hue; `=`/`C`/`⌫`/`.` stay neutral so color reads as *the expression*.
+- **Two highlight shapes, `filled_style` + `outline_style`.** Rainbow fills on focus
+  (the key's hue) and press (`loud`). Mono derives its accents from the same palette
+  (the old static cyan is gone): colored keys outline-on-focus / fill-on-press, and
+  neutral keys use `loud` with the shapes **swapped** (fill-on-focus / outline-on-press)
+  — a user call, because a faint neutral outline read too close to the plain resting
+  cell.
+- **UX iteration (user-driven).** Landed over several rounds: rainbow default on,
+  standard 5×4 the launch pad, mono focus borrowing the palette hue, then the
+  neutral-key swap. Defaults flipped: `ColorMode::Rainbow` and the standard pad at
+  launch (`run()` dropped the startup `auto_select` seed; resize still adapts).
+- **`/ship` review actions.** Code + test review caught a real bug: `filled_style`
+  knocked the glyph out in `knockout(theme)`, which on the **Light** theme is white —
+  so a `Color::White` fill rendered white-on-white (invisible glyph + chip lost in
+  the background), hitting the default rainbow press flash and the mono neutral focus.
+  Fixed by introducing `loud(theme)` (white on dark / black on light) as the exact
+  opposite of `knockout`, so a loud-filled chip always keeps a legible glyph;
+  regression test `loud_filled_highlights_stay_legible_on_the_light_theme`. Also
+  added light-theme neutral-fill, `styled_line` dispatch, and a startup-standard-pad
+  guard; fixed 5 stale comments (mono-cyan rationale, `Theme` "only affects rainbow",
+  the seeded-pad line in `CLAUDE.md`).
+- **Deferred: animation.** The static palette is the whole of this pass. The
+  event-driven effect model (ripple/drift/breath generalizing the press flash) is
+  captured in `docs/tasks/rainbow-mode.md` and left for a follow-up; it shares the
+  `std::time::Instant`-on-wasm gap with `web-ratzilla` (prefer `web-time` when it
+  lands).
+
 ## Known Issues / Deferred
 
 - **`Action::Op(char)` is a convention-enforced invariant (follow-up to
@@ -567,11 +611,13 @@ single press. 100 tests (was 92 at layout-auto), `cargo clippy` clean.
 
 ## Next Task
 
-The whole layout arc (`layout-config` → `layout-registry` → `layout-auto`) plus
-`focus-per-button` are now done. Remaining executable tasks (all depend only on
-the already-done `layout-config`): `rainbow-mode`, `quick-input`; `web-ratzilla`
-is the large platform port, sequenced last.
+The whole layout arc (`layout-config` → `layout-registry` → `layout-auto`),
+`focus-per-button`, and `rainbow-mode` (static pass) are now done. Remaining
+executable task: `quick-input` (depends only on the already-done `layout-config`);
+`web-ratzilla` is the large platform port, sequenced last.
 
-- **`rainbow-mode`** / **`quick-input`** are independent features living mostly in
-  `ui.rs`; either can run alongside a layout task. rainbow-mode's animation shares
-  the web-time clock concern with `web-ratzilla`.
+- **`quick-input`** — modifier-held (Alt) quick keyboard map `h/j/k/l`→`4/5/6/-`
+  with on-cell tips; lives mostly in `ui.rs`/`main.rs`. It will touch the same
+  `draw_button`/key-routing paths rainbow-mode just reworked, so rebase on this.
+- **Deferred within `rainbow-mode`:** the animation pass (effect model in the task
+  doc) shares the `web-time` clock concern with `web-ratzilla`.

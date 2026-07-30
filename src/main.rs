@@ -69,11 +69,9 @@ fn install_panic_hook() {
 }
 
 fn run(terminal: &mut Tui, app: &mut App, ui: &mut UiState) -> Result<()> {
-    // Seed the shape-appropriate pad from the initial terminal size before the
-    // first draw — auto-selection otherwise only fires on `Event::Resize`, which
-    // doesn't arrive at startup.
-    let size = terminal.size()?;
-    ui.auto_select(size.width, size.height);
+    // Launch on the default pad (the 5×4 standard) rather than seeding a
+    // shape-appropriate one from the initial terminal size. Auto-selection still
+    // adapts the pad on `Event::Resize`; the standard pad is just the launch default.
     while !app.should_quit {
         // Expire any press flash before drawing; the 100ms poll below paces
         // this, so a flash clears ~1-2 ticks after the key (a brief blink).
@@ -158,6 +156,13 @@ fn handle_event(event: Event, app: &mut App, ui: &mut UiState) {
             // selection for the current terminal size. The counterpart to Tab:
             // Tab pins, `a` un-pins.
             KeyCode::Char('a') | KeyCode::Char('A') => ui.resume_auto(),
+            // Toggle per-digit rainbow coloring. Like the pad switch, it's a
+            // rendering-only side effect (no calculator state changes), so it's
+            // routed here at the I/O boundary rather than through an `Action`.
+            KeyCode::Char('r') | KeyCode::Char('R') => ui.toggle_color_mode(),
+            // Switch the rainbow palette between dark- and light-background
+            // tunings. Rendering-only, like the rainbow toggle above.
+            KeyCode::Char('t') | KeyCode::Char('T') => ui.toggle_theme(),
             // Copy the result to the clipboard (vim-style yank; Ctrl-C is taken
             // by quit in raw mode). A no-op unless a result is on screen.
             KeyCode::Char('y') | KeyCode::Char('Y') => do_copy(app, ui),
@@ -376,6 +381,36 @@ mod tests {
         handle_event(Event::Resize(200, 200), &mut app, &mut ui);
         assert_eq!(ui.layout_index(), 1); // unchanged
         assert_eq!(ui.override_layout(), Some(1));
+    }
+
+    #[test]
+    fn r_key_toggles_color_mode() {
+        // `r` is routed to the rainbow toggle here, not through an Action.
+        use ui_state::ColorMode;
+        let mut app = App::new();
+        let mut ui = UiState::new();
+        assert_eq!(ui.color_mode(), ColorMode::Rainbow); // rainbow is the default
+        handle_event(
+            Event::Key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE)),
+            &mut app,
+            &mut ui,
+        );
+        assert_eq!(ui.color_mode(), ColorMode::Mono);
+    }
+
+    #[test]
+    fn t_key_toggles_theme() {
+        // `t` flips the rainbow palette theme, routed here like `r`.
+        use ui_state::Theme;
+        let mut app = App::new();
+        let mut ui = UiState::new();
+        assert_eq!(ui.theme(), Theme::Dark);
+        handle_event(
+            Event::Key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE)),
+            &mut app,
+            &mut ui,
+        );
+        assert_eq!(ui.theme(), Theme::Light);
     }
 
     #[test]

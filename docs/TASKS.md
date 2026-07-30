@@ -22,6 +22,6 @@
 [x] focus-per-button: Make grid navigation step one button per key press instead of one lattice cell, so crossing a spanning button (wide 0, tall =) takes a single press. Focus stays a lattice cell but steps over the current button's covered cells via the pad's occupancy map (a `Dir` enum + `Keypad::step`). Depends (hard): layout-config.
 
 ## Planned
-[ ] rainbow-mode: Per-digit rainbow color mode for display + buttons, optional animation (shares the web-time clock gap with web-ratzilla). Depends (soft): layout-config.
+[x] rainbow-mode: Per-digit rainbow color mode for display + buttons, optional animation (shares the web-time clock gap with web-ratzilla). Depends (soft): layout-config. (static pass shipped; animation deferred — see design doc + progress.md)
 [ ] quick-input: Modifier-held (Alt, not Ctrl) quick keyboard map h/j/k/l→4/5/6/- with on-cell tips. Depends (soft): layout-config.
 [ ] web-ratzilla: Ratzilla WASM web build + Cloudflare Pages deploy (large; platform port). Gaps: event-loop inversion → Msg enum, arboard→navigator.clipboard, Instant→web-time, crate split. Sequence last.

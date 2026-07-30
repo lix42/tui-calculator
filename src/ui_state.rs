@@ -23,6 +23,32 @@ const FLASH_DURATION: Duration = Duration::from_millis(120);
 /// not a momentary blink. Cleared by the same `tick` that expires the flash.
 const STATUS_DURATION: Duration = Duration::from_millis(1500);
 
+/// How the digits are colored. A **presentation-only** toggle — it changes no
+/// calculator state, so it lives on `UiState` (the rendering half), not `App`.
+/// `Rainbow` (each digit `0`–`9` its own hue on both the button grid and the
+/// display) is the default look; `Mono` is the plain fallback (see
+/// [`crate::ui::glyph_color`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ColorMode {
+    Mono,
+    #[default]
+    Rainbow,
+}
+
+/// Which background the palette is tuned for. It sets the HSLuv
+/// lightness/saturation the hues are built at (see [`crate::ui::glyph_color`]), so
+/// colors stay legible on the chosen background. Affects **both** color modes: the
+/// digit hues in `Rainbow`, and — since mono's focus/press accents are drawn from
+/// the same palette — the highlight colors in `Mono` too. `Dark` is the default
+/// (the common TUI case); toggled at runtime by the `t` key. A plain data enum —
+/// the color math lives in `ui.rs`, not here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Theme {
+    #[default]
+    Dark,
+    Light,
+}
+
 pub struct UiState {
     // The pads the user can switch between, and which one is active. Built at
     // startup (a `Keypad` allocates, so it can't be a `static`). `keypad()`
@@ -52,6 +78,12 @@ pub struct UiState {
     // a TUI has no log, so this status line is the only place it can surface.
     // `None` when nothing is being shown; expired by `tick` after `STATUS_DURATION`.
     status: Option<(String, Instant)>,
+    // Per-digit rainbow (default) vs mono. Read by the renderer each draw; toggled
+    // by the `r` key, routed at the I/O boundary in `main.rs` like the pad switch.
+    color_mode: ColorMode,
+    // Which background the palette is tuned for (dark by default). Affects both
+    // modes — rainbow digit hues and mono highlight accents; toggled by the `t` key.
+    theme: Theme,
 }
 
 impl UiState {
@@ -73,7 +105,41 @@ impl UiState {
             button_rects,
             copy_rect: Rect::ZERO,
             status: None,
+            color_mode: ColorMode::default(),
+            theme: Theme::default(),
         }
+    }
+
+    /// Flip between mono and rainbow coloring. Routed from the `r` key in
+    /// `main.rs` (like the pad switch and copy), *not* through the `Action` enum:
+    /// coloring is a rendering concern that transforms no calculator state.
+    pub fn toggle_color_mode(&mut self) {
+        self.color_mode = match self.color_mode {
+            ColorMode::Mono => ColorMode::Rainbow,
+            ColorMode::Rainbow => ColorMode::Mono,
+        };
+    }
+
+    /// The active color mode; the renderer reads it to decide whether to color
+    /// digits. `Copy`, so callers hold a value rather than borrowing `self`.
+    pub fn color_mode(&self) -> ColorMode {
+        self.color_mode
+    }
+
+    /// Flip the palette between its dark- and light-background tunings. Routed from
+    /// the `t` key in `main.rs`. Affects both modes: the rainbow digit hues and the
+    /// mono focus/press accents (both drawn from the themed palette).
+    pub fn toggle_theme(&mut self) {
+        self.theme = match self.theme {
+            Theme::Dark => Theme::Light,
+            Theme::Light => Theme::Dark,
+        };
+    }
+
+    /// The active palette theme; the renderer reads it to build hues at the right
+    /// lightness for the background. `Copy`.
+    pub fn theme(&self) -> Theme {
+        self.theme
     }
 
     /// The active keypad; the UI reads its dimensions and buttons to render.
@@ -531,6 +597,20 @@ mod tests {
     }
 
     #[test]
+    fn startup_state_is_standard_pad_unpinned() {
+        // The launch default: a freshly constructed UiState sits on the standard 5×4
+        // pad, unpinned, *before* any resize — `run()` no longer seeds a
+        // shape-appropriate pad from the initial terminal size. Even a tall terminal
+        // (which `select_for` would map to the tall pad) must not have been applied
+        // yet, so re-adding the startup auto_select seed would fail this guard.
+        let ui = UiState::new();
+        assert_eq!(ui.layout_index(), 0); // standard
+        assert_eq!(ui.override_layout(), None); // auto, not pinned
+        assert_eq!(ui.select_for(30, 45), 1); // a tall shape *would* pick tall…
+        assert_eq!(ui.layout_index(), 0); // …but startup ignored shape
+    }
+
+    #[test]
     fn auto_select_follows_shape_when_auto() {
         // In auto mode a resize switches to the best-fit pad.
         let mut ui = UiState::new();
@@ -683,6 +763,28 @@ mod tests {
         // A new edit dismisses it immediately, without waiting for expiry.
         ui.clear_status();
         assert_eq!(ui.status_text(), None);
+    }
+
+    #[test]
+    fn toggle_color_mode_flips_and_round_trips() {
+        // Starts rainbow (the default); each press flips, so two presses return to it.
+        let mut ui = UiState::new();
+        assert_eq!(ui.color_mode(), ColorMode::Rainbow);
+        ui.toggle_color_mode();
+        assert_eq!(ui.color_mode(), ColorMode::Mono);
+        ui.toggle_color_mode();
+        assert_eq!(ui.color_mode(), ColorMode::Rainbow);
+    }
+
+    #[test]
+    fn toggle_theme_flips_and_round_trips() {
+        // Dark by default; each press flips, two presses return to dark.
+        let mut ui = UiState::new();
+        assert_eq!(ui.theme(), Theme::Dark);
+        ui.toggle_theme();
+        assert_eq!(ui.theme(), Theme::Light);
+        ui.toggle_theme();
+        assert_eq!(ui.theme(), Theme::Dark);
     }
 
     #[test]
