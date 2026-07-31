@@ -19,7 +19,7 @@ use crossterm::terminal::{
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 
-use action::Action;
+use action::{Action, quick_map};
 use app::App;
 use layout::Dir;
 use ui_state::UiState;
@@ -134,6 +134,44 @@ fn handle_event(event: Event, app: &mut App, ui: &mut UiState) {
             app.should_quit = true;
             return;
         }
+        // Quick-input mode, checked before navigation because it *reassigns* the
+        // nav letters: while it's on, `j k l` type digits (see `action::QUICK_MAP`).
+        // A mode rather than a held modifier because terminals emit no
+        // "modifier went down" event, and macOS terminals may swallow Alt-chords
+        // into composed characters before the app ever sees a modifier.
+        if ui.quick_mode() {
+            // Esc leaves the mode. It no longer quits anywhere (see the match
+            // below): entering on `i` invites the vim reflex of tapping Esc twice
+            // to be sure, and a second Esc that quit would discard the expression
+            // — the exact mishap this mode's key choice courts.
+            if key.code == KeyCode::Esc {
+                ui.set_quick_mode(false);
+                return;
+            }
+            // Gated on no Ctrl/Alt for the same reason the nav block below is:
+            // terminal control chords (Ctrl-U = kill line, Ctrl-L = redraw, Alt-D
+            // = kill word, …) arrive as the plain char plus a modifier, and a
+            // quick key that ignored the modifier would turn Ctrl-U into a `4`.
+            if !key
+                .modifiers
+                .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+            {
+                if let KeyCode::Char(ch) = key.code
+                    && let Some(action) = quick_map(ch).and_then(Action::from_label)
+                {
+                    activate(app, ui, action);
+                    return;
+                }
+                // The vim nav *letters* go inert here: `j k l` already type digits
+                // above, so letting `h` still move focus would make one row of keys
+                // behave two different ways. The arrow keys fall through and keep
+                // navigating (exactly as they do in vim's insert mode), so focus is
+                // never stranded. Every other unmapped key keeps its normal meaning.
+                if matches!(key.code, KeyCode::Char(_)) && focus_dir(key.code).is_some() {
+                    return;
+                }
+            }
+        }
         // HJKL / arrows move focus only — no activation, no flash. Gated on no
         // Ctrl/Alt so terminal control chords (Ctrl-H = Backspace, Ctrl-L =
         // redraw, …) aren't swallowed as navigation. Shift is allowed — that's
@@ -147,7 +185,12 @@ fn handle_event(event: Event, app: &mut App, ui: &mut UiState) {
             return;
         }
         match key.code {
-            KeyCode::Char('q') | KeyCode::Esc => app.should_quit = true,
+            // `q` and Ctrl-C are the only ways out. Esc is deliberately *not* a
+            // quit key: it means "leave quick-mode", and one key that sometimes
+            // exits the app and sometimes exits a mode is a trap when the app is
+            // modal — the same one-job-each rule Tab (pin) and `a` (un-pin) follow.
+            // Outside quick-mode Esc falls through here and is simply inert.
+            KeyCode::Char('q') => app.should_quit = true,
             // Tab switches to the next keypad. Like copy and focus moves, it's a
             // UI-only side effect (no calculator state changes), so it's routed
             // here at the I/O boundary rather than through an `Action`.
@@ -166,6 +209,10 @@ fn handle_event(event: Event, app: &mut App, ui: &mut UiState) {
             // Copy the result to the clipboard (vim-style yank; Ctrl-C is taken
             // by quit in raw mode). A no-op unless a result is on screen.
             KeyCode::Char('y') | KeyCode::Char('Y') => do_copy(app, ui),
+            // Enter quick-input mode (vim's "insert"), leaving `hjkl` free to type
+            // rather than navigate. Only reachable when the mode is *off* — the
+            // block above claims `i` for the digit `5` once it's on.
+            KeyCode::Char('i') | KeyCode::Char('I') => ui.set_quick_mode(true),
             // Space activates whatever is focused, leaving focus put so it can
             // be re-pressed in place. The focused cell is always a real grid
             // label, so `from_label` resolves it.
@@ -471,5 +518,144 @@ mod tests {
         assert_eq!(key_to_action(KeyCode::Char(' ')), None);
         assert_eq!(key_to_action(KeyCode::Char('q')), None);
         assert_eq!(key_to_action(KeyCode::Esc), None);
+    }
+
+    /// Feed one unmodified key press through the event handler.
+    fn press(app: &mut App, ui: &mut UiState, code: KeyCode) {
+        handle_event(Event::Key(KeyEvent::new(code, KeyModifiers::NONE)), app, ui);
+    }
+
+    #[test]
+    fn i_enters_quick_mode_and_esc_leaves_it() {
+        let mut app = App::new();
+        let mut ui = UiState::new();
+        assert!(!ui.quick_mode()); // off at launch
+        press(&mut app, &mut ui, KeyCode::Char('i'));
+        assert!(ui.quick_mode());
+        press(&mut app, &mut ui, KeyCode::Esc);
+        assert!(!ui.quick_mode());
+        assert!(!app.should_quit); // Esc left the mode, it did not quit
+    }
+
+    #[test]
+    fn esc_never_quits_and_double_tapping_it_is_safe() {
+        // Esc is not a quit key at all. The case that forced this: a vim user
+        // taps Esc twice to be sure they've left insert — the first leaves
+        // quick-mode, and the second must not take the expression down with it.
+        let mut app = App::new();
+        let mut ui = UiState::new();
+        press(&mut app, &mut ui, KeyCode::Esc); // bare Esc, mode never entered
+        assert!(!app.should_quit);
+
+        press(&mut app, &mut ui, KeyCode::Char('i'));
+        press(&mut app, &mut ui, KeyCode::Char('k')); // types 2
+        press(&mut app, &mut ui, KeyCode::Esc); // leaves the mode
+        press(&mut app, &mut ui, KeyCode::Esc); // the reflex second tap
+        assert!(!ui.quick_mode());
+        assert!(!app.should_quit);
+        assert_eq!(app.display_lines().1, "2"); // work intact
+    }
+
+    #[test]
+    fn quick_mode_turns_the_nav_letters_into_digits() {
+        // The crux of the feature: in-mode `j k l` type 1 2 3 instead of moving
+        // focus, and `i` types 5 rather than re-entering the mode.
+        let mut app = App::new();
+        let mut ui = UiState::new();
+        press(&mut app, &mut ui, KeyCode::Char('i'));
+        for code in ['j', 'k', 'l', 'i'] {
+            press(&mut app, &mut ui, KeyCode::Char(code));
+        }
+        assert_eq!(app.display_lines().1, "1235");
+        assert!(ui.quick_mode()); // still on — only Esc leaves
+    }
+
+    #[test]
+    fn quick_mode_enters_operators_as_display_glyphs() {
+        // `a s d f` route through `from_label`, so `d` must apply the *eval*
+        // multiply while displaying `×` — the same round-trip paste relies on.
+        let mut app = App::new();
+        let mut ui = UiState::new();
+        press(&mut app, &mut ui, KeyCode::Char('i'));
+        for code in ['k', 'd', 'j', 'm'] {
+            press(&mut app, &mut ui, KeyCode::Char(code));
+        }
+        assert_eq!(app.display_lines().1, "2×10");
+        press(&mut app, &mut ui, KeyCode::Enter);
+        assert_eq!(app.display_lines().1, "20");
+    }
+
+    #[test]
+    fn nav_letters_still_navigate_outside_quick_mode() {
+        // The two interpretations stay disjoint: the same `j` that types 1 in-mode
+        // moves focus down when the mode is off.
+        let mut app = App::new();
+        let mut ui = UiState::new(); // focus starts on "=" at (4, 3)
+        press(&mut app, &mut ui, KeyCode::Char('k'));
+        assert_eq!(ui.focus(), (3, 3)); // moved up
+        assert_eq!(app.display_lines().1, ""); // typed nothing
+    }
+
+    #[test]
+    fn quick_mode_silences_nav_letters_but_not_arrows() {
+        // `h` has no quick mapping (nothing sits left of `1` on a numpad). It must
+        // go inert rather than navigate, or its row would behave two ways at once —
+        // while the arrow keys keep working, as they do in vim's insert mode.
+        let mut app = App::new();
+        let mut ui = UiState::new();
+        press(&mut app, &mut ui, KeyCode::Char('i'));
+        press(&mut app, &mut ui, KeyCode::Char('h'));
+        assert_eq!(ui.focus(), (4, 3)); // unmoved
+        assert_eq!(app.display_lines().1, ""); // and typed nothing
+        press(&mut app, &mut ui, KeyCode::Left);
+        assert_eq!(ui.focus(), (4, 2)); // arrows still navigate
+    }
+
+    #[test]
+    fn quick_mode_ignores_ctrl_and_alt_chords() {
+        // A quick key is the *bare* letter. Ctrl-U (kill line), Ctrl-L (redraw),
+        // and Alt-D (kill word) are terminal chords a user fires by reflex; typing
+        // `4`, `3`, and `×` for them would corrupt the expression, so the mode is
+        // gated on no Ctrl/Alt exactly like the navigation block.
+        let mut app = App::new();
+        let mut ui = UiState::new();
+        press(&mut app, &mut ui, KeyCode::Char('i'));
+        for (code, mods) in [
+            (KeyCode::Char('u'), KeyModifiers::CONTROL),
+            (KeyCode::Char('l'), KeyModifiers::CONTROL),
+            (KeyCode::Char('d'), KeyModifiers::ALT),
+        ] {
+            handle_event(Event::Key(KeyEvent::new(code, mods)), &mut app, &mut ui);
+        }
+        assert_eq!(app.display_lines().1, "");
+        assert!(ui.quick_mode()); // and the mode is untouched
+    }
+
+    #[test]
+    fn unmapped_keys_keep_their_normal_meaning_in_quick_mode() {
+        // Quick-mode only reassigns the keys in the map; everything else falls
+        // through. `c` still clears and `q` still quits.
+        let mut app = App::new();
+        let mut ui = UiState::new();
+        press(&mut app, &mut ui, KeyCode::Char('i'));
+        press(&mut app, &mut ui, KeyCode::Char('k')); // types 2
+        press(&mut app, &mut ui, KeyCode::Char('c')); // clears
+        assert_eq!(app.display_lines().1, "");
+        press(&mut app, &mut ui, KeyCode::Char('q'));
+        assert!(app.should_quit);
+    }
+
+    #[test]
+    fn quick_input_follows_focus_and_flashes_like_any_activation() {
+        // Quick keys go through the shared `activate` funnel, so they get the same
+        // feedback a click or a normal keypress does.
+        let mut app = App::new();
+        let mut ui = UiState::new();
+        press(&mut app, &mut ui, KeyCode::Char('i'));
+        press(&mut app, &mut ui, KeyCode::Char('o')); // the "6" button
+        let six = ui.keypad().position_of("6").expect("6 is on the pad");
+        assert_eq!(ui.focus(), six);
+        let idx = ui.keypad().button_index_at(six.0, six.1);
+        assert!(ui.is_button_pressed(idx));
     }
 }

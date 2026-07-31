@@ -5,6 +5,7 @@ use ratatui::style::{Color, Style, Stylize};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Padding, Paragraph};
 
+use crate::action::quick_key;
 use crate::app::App;
 use crate::layout::{CELL_H, CELL_W, DISPLAY_H};
 use crate::ui_state::{ColorMode, Theme, UiState};
@@ -271,6 +272,9 @@ fn draw_buttons(frame: &mut Frame, ui: &mut UiState, area: Rect) {
     .split(area);
 
     let (mode, theme) = (ui.color_mode(), ui.theme());
+    // Tips are drawn only while quick-mode is on, which makes them the mode
+    // indicator as well as the key legend: the mode is never silently active.
+    let quick = ui.quick_mode();
     let mut rects = vec![Rect::ZERO; keypad.button_count()];
     for (i, b) in keypad.buttons().iter().enumerate() {
         let left = col_x[b.col as usize];
@@ -285,9 +289,12 @@ fn draw_buttons(frame: &mut Frame, ui: &mut UiState, area: Rect) {
         };
         draw_button(
             frame,
-            b.label,
-            ui.is_button_focused(i),
-            ui.is_button_pressed(i),
+            ButtonView {
+                label: b.label,
+                focused: ui.is_button_focused(i),
+                pressed: ui.is_button_pressed(i),
+                tip: if quick { quick_key(b.label) } else { None },
+            },
             mode,
             theme,
             rect,
@@ -299,22 +306,34 @@ fn draw_buttons(frame: &mut Frame, ui: &mut UiState, area: Rect) {
     ui.set_button_rects(rects);
 }
 
-fn draw_button(
-    frame: &mut Frame,
-    label: &str,
+/// Everything about one button's appearance that isn't its geometry or the
+/// global palette. Grouping these keeps `draw_button` at five arguments and
+/// names the two bare `bool`s at the call site.
+struct ButtonView<'a> {
+    label: &'a str,
     focused: bool,
     pressed: bool,
-    mode: ColorMode,
-    theme: Theme,
-    area: Rect,
-) {
-    let style = button_style(label, focused, pressed, mode, theme);
-    let block = Block::bordered()
+    /// The quick-input key that enters this button, shown in its top border while
+    /// quick-mode is on; `None` when the mode is off or the button has no mapping.
+    tip: Option<char>,
+}
+
+fn draw_button(frame: &mut Frame, view: ButtonView, mode: ColorMode, theme: Theme, area: Rect) {
+    let style = button_style(view.label, view.focused, view.pressed, mode, theme);
+    let mut block = Block::bordered()
         .border_type(style.border_type)
         .border_style(style.border_style)
         .style(style.block_style)
         .padding(Padding::symmetric(2, 1));
-    let paragraph = Paragraph::new(label)
+    // The tip rides *in the top border*, not inside the cell: the label is
+    // centered in the padded interior, so a second glyph in there would either
+    // shift it off-center or collide with it. The border is otherwise empty. It
+    // inherits `border_style` so it tracks the cell's focus/press state, dimmed so
+    // the button's own glyph stays the thing you read first.
+    if let Some(key) = view.tip {
+        block = block.title(Span::styled(key.to_string(), style.border_style.dim()));
+    }
+    let paragraph = Paragraph::new(view.label)
         .centered()
         .style(style.text_style)
         .block(block);
@@ -445,7 +464,54 @@ fn label_color(label: &str, theme: Theme) -> Option<Color> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
     use std::collections::HashSet;
+
+    /// Render the whole UI onto a `28×29` test terminal — exactly the standard
+    /// pad's panel size (`4×7` cells wide, `5×5` cells plus the display tall), so
+    /// the panel fills the buffer and cell coordinates are predictable.
+    fn render(ui: &mut UiState) -> ratatui::buffer::Buffer {
+        let mut terminal = Terminal::new(TestBackend::new(28, 29)).expect("test terminal");
+        let app = App::new();
+        terminal
+            .draw(|frame| draw(frame, &app, ui))
+            .expect("draw succeeds");
+        terminal.backend().buffer().clone()
+    }
+
+    #[test]
+    fn quick_tips_render_in_the_button_border_only_while_the_mode_is_on() {
+        // The "5" button sits at pad cell (row 2, col 1) => x = 1*CELL_W = 7,
+        // y = DISPLAY_H + 2*CELL_H = 14. Its top border is that row, and a title
+        // starts just past the corner, at x = 8. The label itself is centered two
+        // rows lower, so finding `i` at (8, 14) proves the tip is in the *border*
+        // and not displacing the glyph.
+        let mut ui = UiState::new();
+        ui.set_quick_mode(true);
+        let buf = render(&mut ui);
+        assert_eq!(buf[(8, 14)].symbol(), "i", "tip missing from the 5 button");
+        // The glyph it hints at is still centered, untouched, below it.
+        assert_eq!(buf[(10, 16)].symbol(), "5");
+
+        // With the mode off the border is plain again — no lowercase tip letters
+        // anywhere (every pad label is a digit, operator, or uppercase `C`).
+        ui.set_quick_mode(false);
+        let plain = render(&mut ui);
+        assert_eq!(plain[(8, 14)].symbol(), "─");
+        for y in 0..plain.area.height {
+            for x in 0..plain.area.width {
+                let s = plain[(x, y)].symbol();
+                assert!(
+                    !s.chars().any(|c| QUICK_TIP_CHARS.contains(c)),
+                    "found tip {s:?} at ({x}, {y}) with quick-mode off"
+                );
+            }
+        }
+    }
+
+    /// Every character `QUICK_MAP` uses as a tip, for the "no tips when off" sweep.
+    const QUICK_TIP_CHARS: &str = "uiojklmasdf[]";
 
     // Every glyph the palette colors — the ten digits plus the operators and
     // parens. `=`, `C`, `⌫`, `.` are deliberately absent (they stay neutral).

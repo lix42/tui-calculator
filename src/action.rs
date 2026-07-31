@@ -119,9 +119,60 @@ impl Action {
     }
 }
 
+/// The quick-input map: a keyboard character → the grid label it enters while
+/// quick-mode is on. One table read in *both* directions ([`quick_map`] and
+/// [`quick_key`]), so the routing and the on-screen tips cannot drift apart.
+///
+/// The right hand is a **numpad in place**: on a QWERTY keyboard `u i o` sit
+/// directly below `7 8 9`, and `j k l` directly below those, so the rows descend
+/// `789 / 456 / 123` exactly like a physical keypad — with `m`, one row further
+/// down again, as the `0` beneath them. The number row itself needs no entry (a
+/// digit key already types its digit), and neither does `.`: it is *already* the
+/// decimal point and already sits bottom-right, where a numpad puts it. The left
+/// hand takes the four operators, and `[` / `]` reach the parens without the
+/// Shift that `(` / `)` normally cost.
+///
+/// Values are *labels*, not [`Action`]s, so callers resolve through
+/// [`Action::from_label`] — the same display-glyph boundary the button grid and
+/// paste already use — and the tips know which cell to mark. Keeping this a pure
+/// `char → label` table (no crossterm types) means the web port can reuse it
+/// verbatim against ratzilla's key events.
+#[rustfmt::skip]
+const QUICK_MAP: &[(char, &str)] = &[
+    // Right hand: the numpad, descending, with `0` under it.
+    ('u', "4"), ('i', "5"), ('o', "6"),
+    ('j', "1"), ('k', "2"), ('l', "3"),
+                ('m', "0"),
+    // Left hand: the four operators.
+    ('a', "+"), ('s', "-"), ('d', "×"), ('f', "÷"),
+    // Parens, without the Shift they normally need.
+    ('[', "("), (']', ")"),
+];
+
+/// The grid label `ch` enters in quick-mode, or `None` if it has no mapping.
+/// See [`QUICK_MAP`] for the layout and why the digit row and `.` are absent.
+pub fn quick_map(ch: char) -> Option<&'static str> {
+    QUICK_MAP
+        .iter()
+        .find(|(key, _)| *key == ch)
+        .map(|(_, label)| *label)
+}
+
+/// The inverse of [`quick_map`]: the key that enters `label`, or `None` if that
+/// button has no quick key. Drives the on-cell tips, so it has to agree with
+/// `quick_map` — reading the one [`QUICK_MAP`] table is what guarantees it.
+pub fn quick_key(label: &str) -> Option<char> {
+    QUICK_MAP
+        .iter()
+        .find(|(_, mapped)| *mapped == label)
+        .map(|(key, _)| *key)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::layout::Keypad;
+    use std::collections::HashSet;
 
     #[test]
     fn digit_new_accepts_0_through_9() {
@@ -201,5 +252,91 @@ mod tests {
             let action = Action::from_label(label).expect("known label");
             assert_eq!(action.label(), label);
         }
+    }
+
+    #[test]
+    fn quick_map_lays_out_a_numpad_under_the_right_hand() {
+        // The shape is the point: `u i o` / `j k l` / `m` descend 456 / 123 / 0,
+        // mirroring the physical keys they sit under.
+        assert_eq!(
+            ["u", "i", "o"].map(|k| quick_map(k.parse().unwrap())),
+            [Some("4"), Some("5"), Some("6")]
+        );
+        assert_eq!(
+            ["j", "k", "l"].map(|k| quick_map(k.parse().unwrap())),
+            [Some("1"), Some("2"), Some("3")]
+        );
+        assert_eq!(quick_map('m'), Some("0"));
+        // Left hand: operators, as the *display glyphs* (so `from_label` resolves
+        // them to the eval operators, not as literal `*`/`/` keystrokes).
+        assert_eq!(
+            ['a', 's', 'd', 'f'].map(quick_map),
+            [Some("+"), Some("-"), Some("×"), Some("÷")]
+        );
+        assert_eq!(['[', ']'].map(quick_map), [Some("("), Some(")")]);
+    }
+
+    #[test]
+    fn quick_map_leaves_the_digit_row_and_dot_alone() {
+        // Deliberate absences, not oversights: a digit key already types its
+        // digit, and `.` is already the decimal point — mapping either would be a
+        // no-op entry that also earned a pointless on-screen tip.
+        for ch in ['7', '8', '9', '0', '.'] {
+            assert_eq!(quick_map(ch), None, "{ch:?} needs no quick mapping");
+        }
+        // `h` is genuinely unmapped — the numpad has nothing left of `1`.
+        for ch in ['h', 'q', 'z', 'y', ' '] {
+            assert_eq!(quick_map(ch), None, "{ch:?} should not be mapped");
+        }
+    }
+
+    #[test]
+    fn every_quick_label_is_a_real_button_on_every_pad() {
+        // The contract that keeps quick-input honest: a mapped label must resolve
+        // to an Action *and* exist on whichever pad is active, or a key would
+        // silently do nothing (or flash a cell that isn't there).
+        for (key, label) in QUICK_MAP {
+            assert!(
+                Action::from_label(label).is_some(),
+                "{key:?} maps to {label:?}, which is not an Action"
+            );
+            for (name, pad) in [
+                ("standard", Keypad::standard()),
+                ("tall", Keypad::tall()),
+                ("wide", Keypad::wide()),
+            ] {
+                assert!(
+                    pad.position_of(label).is_some(),
+                    "{label:?} (key {key:?}) is missing from the {name} pad"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn quick_key_is_the_inverse_of_quick_map() {
+        // The tips read this direction; if the two disagreed, a cell would
+        // advertise a key that doesn't drive it.
+        for (key, label) in QUICK_MAP {
+            assert_eq!(quick_key(label), Some(*key));
+            assert_eq!(quick_map(*key), Some(*label));
+        }
+        // A button with no quick key gets no tip.
+        assert_eq!(quick_key("="), None);
+        assert_eq!(quick_key("7"), None);
+    }
+
+    #[test]
+    fn quick_map_has_no_duplicate_keys_or_labels() {
+        // Both lookups take the *first* match, so a duplicate entry would be
+        // silently shadowed — and a label mapped twice would draw two tips.
+        let keys: HashSet<char> = QUICK_MAP.iter().map(|(key, _)| *key).collect();
+        assert_eq!(keys.len(), QUICK_MAP.len(), "duplicate key in QUICK_MAP");
+        let labels: HashSet<&str> = QUICK_MAP.iter().map(|(_, label)| *label).collect();
+        assert_eq!(
+            labels.len(),
+            QUICK_MAP.len(),
+            "duplicate label in QUICK_MAP"
+        );
     }
 }
