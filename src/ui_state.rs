@@ -7,7 +7,9 @@
 //! only the calculator state (`expr` / `current` / `mode`); the two have
 //! different lifecycles and concerns.
 
-use std::time::{Duration, Instant};
+// `web_time`, not `std::time`: `Instant::now()` panics on wasm32, and this module
+// is shared by the (future) web build. Drop-in — it re-exports std's on native.
+use web_time::{Duration, Instant};
 
 use ratatui::layout::{Position, Rect};
 
