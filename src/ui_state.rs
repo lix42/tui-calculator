@@ -84,6 +84,12 @@ pub struct UiState {
     // Which background the palette is tuned for (dark by default). Affects both
     // modes — rainbow digit hues and mono highlight accents; toggled by the `t` key.
     theme: Theme,
+    // Quick-input mode: while on, the home-row keys enter digits/operators (see
+    // `action::QUICK_MAP`) instead of navigating, and each mapped button shows its
+    // key in the border. Entered with `i` and left with `Esc`, both routed in
+    // `main.rs` — it's an input-routing and rendering concern, so like `color_mode`
+    // and `theme` it lives here rather than on `App`.
+    quick_mode: bool,
 }
 
 impl UiState {
@@ -107,7 +113,21 @@ impl UiState {
             status: None,
             color_mode: ColorMode::default(),
             theme: Theme::default(),
+            quick_mode: false,
         }
+    }
+
+    /// Turn quick-input mode on or off. A setter rather than a toggle because the
+    /// two triggers are one-way and live in different states: `i` only *enters*
+    /// (in-mode it types `5`, per the numpad map) and `Esc` only *leaves*.
+    pub fn set_quick_mode(&mut self, on: bool) {
+        self.quick_mode = on;
+    }
+
+    /// Whether quick-input mode is on. Read by the key router (which keys enter
+    /// digits) and by the renderer (which buttons show a tip).
+    pub fn quick_mode(&self) -> bool {
+        self.quick_mode
     }
 
     /// Flip between mono and rainbow coloring. Routed from the `r` key in
@@ -785,6 +805,20 @@ mod tests {
         assert_eq!(ui.theme(), Theme::Light);
         ui.toggle_theme();
         assert_eq!(ui.theme(), Theme::Dark);
+    }
+
+    #[test]
+    fn quick_mode_is_off_at_launch_and_set_explicitly() {
+        // A setter, not a toggle: `i` only enters and `Esc` only leaves, so
+        // setting it twice the same way is idempotent rather than a flip.
+        let mut ui = UiState::new();
+        assert!(!ui.quick_mode());
+        ui.set_quick_mode(true);
+        assert!(ui.quick_mode());
+        ui.set_quick_mode(true);
+        assert!(ui.quick_mode());
+        ui.set_quick_mode(false);
+        assert!(!ui.quick_mode());
     }
 
     #[test]

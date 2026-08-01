@@ -23,5 +23,5 @@
 
 ## Planned
 [x] rainbow-mode: Per-digit rainbow color mode for display + buttons, optional animation (shares the web-time clock gap with web-ratzilla). Depends (soft): layout-config. (static pass shipped; animation deferred — see design doc + progress.md)
-[ ] quick-input: Modifier-held (Alt, not Ctrl) quick keyboard map h/j/k/l→4/5/6/- with on-cell tips. Depends (soft): layout-config.
+[x] quick-input: Home-row quick keyboard map with on-button tips. Shipped as a **sticky mode** (`i` enters, `Esc` leaves), not the planned Alt-held modifier — default macOS Terminal.app composes Option+key into a dead char and sends no ALT modifier. Map is a numpad in place (u i o / j k l / m → 456/123/0, a s d f → operators, [ ] → parens), not h/j/k/l→4/5/6/-. Tips render in each button's top border, only while the mode is on. `Esc` dropped as a quit key as a consequence. Depends (soft): layout-config. (shipped #22)
 [ ] web-ratzilla: Ratzilla WASM web build + Cloudflare Pages deploy (large; platform port). Gaps: event-loop inversion → Msg enum, arboard→navigator.clipboard, Instant→web-time, crate split. Sequence last.

@@ -589,6 +589,73 @@ Per-glyph color mode for both the display and the button grid, toggled at runtim
   `std::time::Instant`-on-wasm gap with `web-ratzilla` (prefer `web-time` when it
   lands).
 
+### quick-input — `src/action.rs`, `src/main.rs`, `src/ui_state.rs`, `src/ui.rs`
+
+**Status:** done · 2026-07-31
+
+A home-row numpad mode with per-button key tips. 136 tests (was 120 at
+rainbow-mode), `cargo clippy`/`fmt` clean. Shipped as #22.
+
+- **A sticky mode, not the task file's `Alt`-held modifier — the load-bearing
+  decision.** Default macOS Terminal.app composes `Option`+`h` into the dead key
+  `˙` and delivers **no `ALT` modifier at all**, so an Alt-triggered feature would
+  silently do nothing on the dev machine and depend on a per-user terminal setting
+  (iTerm2/Ghostty's "Option as Meta") elsewhere. `i` enters, `Esc` leaves. The mode
+  also *dissolves* the task file's caveat (1): it says a "visible only while held"
+  overlay is impossible in a TUI because terminals emit no modifier-down event —
+  but a mode has explicit on/off transitions, so the tips can show exactly while
+  it's active. The decision record now lives at the top of
+  `docs/tasks/quick-input.md`; two reviewers flagged the deviation by reading the
+  superseded spec as the contract, which is why it's recorded there.
+- **The map is a numpad *in place* (user's design).** `u i o` / `j k l` / `m` →
+  `456` / `123` / `0`, because on QWERTY those keys sit physically beneath `7 8 9`;
+  `a s d f` → `+ - × ÷`; `[` `]` → `(` `)` (parens without Shift). The digit row and
+  `.` are deliberately unmapped — a digit key already types its digit, and `.` is
+  already the decimal point sitting bottom-right where a numpad puts it. Mapping
+  either would be a no-op entry that also earned a pointless on-screen tip.
+- **`QUICK_MAP` is a `const &[(char, &str)]` read in both directions**
+  (`quick_map` / `quick_key`), not two `HashMap`s. It's compile-time data, so a
+  `const` slice lives in rodata with no `LazyLock` or allocation — the shape this
+  codebase already moved *away* from when `layout-config` retired
+  `static LABEL_POS: LazyLock<HashMap<…>>`. (`Keypad::label_pos` stays a `HashMap`
+  because a pad is *compiled at runtime* and allocates anyway.) At 13 entries a
+  linear scan beats SipHash, and one table read both ways makes the
+  forward/reverse agreement structural rather than maintained — the inverse test is
+  nearly tautological by construction. Values are *labels*, so callers resolve
+  through the existing `Action::from_label` boundary and quick keys reuse the
+  shared `activate` funnel, inheriting focus-follow and the press flash.
+- **`Esc` is no longer a quit key anywhere** (`q` / `Ctrl-C` only). Entering on `i`
+  invites the vim reflex of double-tapping `Esc`; the second tap would otherwise
+  quit and discard the expression — the exact mishap the mode's key choice courts.
+  This changed behavior *outside* the feature, so it was a deliberate user call.
+  Test: `esc_never_quits_and_double_tapping_it_is_safe`.
+- **`hjkl` go inert in-mode; the arrow keys still navigate.** `j k l` type digits,
+  so leaving `h` navigating would make one row of keys behave two ways at once.
+  Arrows keep working exactly as in vim's insert mode, so focus is never stranded.
+- **Tips ride in each button's top border** via `Block::title`, and only while the
+  mode is on — so they double as the mode indicator (the mode is never silently
+  active). The border, not the interior: after `Padding::symmetric(2, 1)` a
+  `CELL_W = 7` cell has a **one-column** interior, so there is no room beside the
+  glyph. `draw_button` now takes a `ButtonView` struct because clippy's
+  `too_many_arguments` fires at 8 — which also named the two bare `bool`s at the
+  call site.
+- **New testing capability: `TestBackend` render assertions.** `ui.rs` now renders
+  the real UI onto a `28×29` buffer (the standard pad's exact panel size) and
+  asserts on cells — the tip at `(8, 14)` is the `5` button's *border* row while the
+  glyph stays centered at `(10, 16)`. First render test in the repo; use it for
+  future layout claims instead of arguing them in prose.
+- **Review actions (two rounds, both real bugs).** `/code-review --fix` caught the
+  quick-mode block missing the `!intersects(CONTROL | ALT)` guard the navigation
+  block has — `Ctrl-U` typed `4`, `Ctrl-L` typed `3`, `Alt-D` typed `×`, so a
+  reflexive kill-line silently corrupted the expression. Fixed + regression test
+  `quick_mode_ignores_ctrl_and_alt_chords`. It also flagged the double-`Esc` quit
+  above. A Codex pass then found `README.md` documented `Esc` as a quit key, which
+  surfaced that the README had **rotted across four PRs**: it described a focusable
+  "Copy button" pressed with `Space`/`Enter` that never shipped (copy is the
+  `[y Copy]` display affordance, `y` or click) and omitted `Tab`, `a`, `r`, `t`,
+  `y`. Corrected, and `CLAUDE.md` now carries a rule to keep it in sync —
+  `docs/` is not the user-facing surface.
+
 ## Known Issues / Deferred
 
 - **`Action::Op(char)` is a convention-enforced invariant (follow-up to
@@ -611,13 +678,18 @@ Per-glyph color mode for both the display and the button grid, toggled at runtim
 
 ## Next Task
 
-The whole layout arc (`layout-config` → `layout-registry` → `layout-auto`),
-`focus-per-button`, and `rainbow-mode` (static pass) are now done. Remaining
-executable task: `quick-input` (depends only on the already-done `layout-config`);
-`web-ratzilla` is the large platform port, sequenced last.
+Every feature task is now done — the layout arc (`layout-config` →
+`layout-registry` → `layout-auto`), `focus-per-button`, `rainbow-mode` (static
+pass), and `quick-input`. **`web-ratzilla` is all that remains**, and it's the
+large platform port that was always sequenced last.
 
-- **`quick-input`** — modifier-held (Alt) quick keyboard map `h/j/k/l`→`4/5/6/-`
-  with on-cell tips; lives mostly in `ui.rs`/`main.rs`. It will touch the same
-  `draw_button`/key-routing paths rainbow-mode just reworked, so rebase on this.
+- **`web-ratzilla`** — Ratzilla WASM build + Cloudflare Pages deploy. Known gaps:
+  event-loop inversion → a `Msg` enum (see the deferred note above — this is the
+  task that would justify it), `arboard` → `navigator.clipboard`,
+  `std::time::Instant` → `web-time`, and a crate split. **Carry-forward from
+  `quick-input`:** `QUICK_MAP` is a pure `char → label` table with no crossterm
+  types, so ratzilla can reuse it verbatim; and the sticky mode *sidesteps*
+  ratzilla's keydown-only `on_key_event` limitation rather than inheriting it,
+  since nothing depends on observing a modifier's release.
 - **Deferred within `rainbow-mode`:** the animation pass (effect model in the task
-  doc) shares the `web-time` clock concern with `web-ratzilla`.
+  doc) shares the `web-time` clock concern with `web-ratzilla` — do them together.
