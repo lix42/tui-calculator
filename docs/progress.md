@@ -126,7 +126,21 @@ Key implementation details:
   old `expr_to_display` / `display_to_expr` string-replace helpers are gone —
   input is captured as `Op` tokens, never via string substitution.
 - Subsumed `app-result-state`: the `Mode` enum does that task's job
-  (`Evaluated` / `Error` replace `Option<String>`).
+  (`Evaluated` / `Error` replace `Option<String>`). **Re-verified 2026-07-31** and
+  marked `[x]` — it had been left at `[~]` ever since, showing as permanently
+  in-progress. All five of its "Changes Required" hold, but the shape differs from
+  the spec and the difference is worth knowing:
+  - No `EvalResult` type was ever created. Value-vs-error is typed by `Mode`
+    variant instead, which is what killed the `parse::<f64>()` round-trip.
+  - **`Mode::Evaluated(String)` is not the old smell resurfacing.** That `String`
+    is a snapshot of the *input expression* for the display's top line; the result
+    itself lives in `expr` as `Token::Number(f64)`, since `evaluate` collapses the
+    expression to a single `Number`. `format_number` runs only inside
+    `display_string`, i.e. at render time.
+  - This beats the specced `EvalResult::Value(f64)`, which would have held the
+    result in a second place alongside `expr`. One source of truth is why a
+    chained calculation keeps full precision instead of round-tripping through a
+    formatted string.
 
 ### key-input — `src/main.rs`, `src/app.rs`
 Direct keyboard input wired into the event loop, plus a `-0` display fix. 3 new
@@ -585,9 +599,9 @@ Per-glyph color mode for both the display and the button grid, toggled at runtim
   the seeded-pad line in `CLAUDE.md`).
 - **Deferred: animation.** The static palette is the whole of this pass. The
   event-driven effect model (ripple/drift/breath generalizing the press flash) is
-  captured in `docs/tasks/rainbow-mode.md` and left for a follow-up; it shares the
-  `std::time::Instant`-on-wasm gap with `web-ratzilla` (prefer `web-time` when it
-  lands).
+  captured in the "Animation" section of `docs/tasks/rainbow-mode.md` and was
+  later promoted to its own task, **`rainbow-animation`** (2026-07-31), so it
+  stops being invisible notes attached to a closed task.
 
 ### quick-input — `src/action.rs`, `src/main.rs`, `src/ui_state.rs`, `src/ui.rs`
 
@@ -676,20 +690,66 @@ rainbow-mode), `cargo clippy`/`fmt` clean. Shipped as #22.
   events to the right subsystem) to keep `action.rs` crossterm-free and stay in
   scope. Revisit if the event routing in `handle_event` grows more cases.
 
+## web-time swap — `Cargo.toml`, `src/ui_state.rs`
+
+**Status:** done · 2026-07-31 (not a task; a 2-line prerequisite extracted from
+`web-ratzilla` and done standalone)
+
+`ui_state.rs` now imports `Instant` from `web-time` instead of `std::time`. 136
+tests green, clippy/fmt clean — the native build is bit-for-bit equivalent, since
+web-time re-exports `std`'s `Instant` on native and only swaps in
+`performance.now()` on `wasm32`.
+
+- **Why it wasn't made a task.** It was named as a prerequisite in *three* places
+  (`web-ratzilla.md` gap 3, `rainbow-mode.md`'s cross-cutting blockquote, and this
+  log's Next Task section), each saying "coordinate so it happens once" — but the
+  change is one `Cargo.toml` line and one `use`. Doing it outright *deletes* the
+  coordination problem instead of tracking it; all three notes have been removed.
+- **`rainbow-animation` never actually depended on it.** The animation works fine
+  on native with `std::time::Instant`; `web-time` was only ever a *preference* so
+  the web port wouldn't retrofit. Drawing that edge would have been a false
+  dependency, wrongly showing the animation task as blocked.
+- **The dep is deliberately NOT target-gated.** `ui_state.rs` is shared code the
+  native binary compiles too, so `[target.'cfg(target_arch = "wasm32")'.dependencies]`
+  would break native with an unresolved `web_time` import. It belongs in plain
+  `[dependencies]`; only `ratzilla`/`web-sys` are genuinely wasm-only. Rationale is
+  in a comment on the dep so it can't be "tidied" later.
+
+## rainbow-animation — not started
+
+**Status:** not started
+
+Goal: the event-driven effect model deferred out of `rainbow-mode` — generalize
+the press flash into `Effect { kind, origin, started, duration }`, then layer
+ripple / hue-drift / display-breath on top, with the two focus-triggered effects
+held for a later trial. Design lives in the "Animation" section of
+`docs/tasks/rainbow-mode.md`; the task file is `docs/tasks/rainbow-animation.md`.
+
+Carry-forward for whoever picks it up:
+- The clock question is closed (see the `web-time` section above) — use
+  `ui_state.rs`'s existing `Instant` import.
+- Three things changed since the design was written: `Theme` (Dark|Light) now
+  exists and effects must stay legible on **both**; `ColorMode` defaults to
+  `Rainbow`; and the pad is no longer a fixed 5×4, so a ripple's distance metric
+  has to read the *active* keypad's lattice and decide how spanning buttons
+  (wide `0`, tall `=`) measure.
+
 ## Next Task
 
 Every feature task is now done — the layout arc (`layout-config` →
 `layout-registry` → `layout-auto`), `focus-per-button`, `rainbow-mode` (static
-pass), and `quick-input`. **`web-ratzilla` is all that remains**, and it's the
-large platform port that was always sequenced last.
+pass), and `quick-input`. **Two tasks remain, and they're independent** — the
+`web-time` swap that used to couple them has landed, so either order works.
 
+- **`rainbow-animation`** — the smaller of the two and immediately executable; see
+  its section above.
 - **`web-ratzilla`** — Ratzilla WASM build + Cloudflare Pages deploy. Known gaps:
   event-loop inversion → a `Msg` enum (see the deferred note above — this is the
-  task that would justify it), `arboard` → `navigator.clipboard`,
-  `std::time::Instant` → `web-time`, and a crate split. **Carry-forward from
-  `quick-input`:** `QUICK_MAP` is a pure `char → label` table with no crossterm
-  types, so ratzilla can reuse it verbatim; and the sticky mode *sidesteps*
-  ratzilla's keydown-only `on_key_event` limitation rather than inheriting it,
-  since nothing depends on observing a modifier's release.
-- **Deferred within `rainbow-mode`:** the animation pass (effect model in the task
-  doc) shares the `web-time` clock concern with `web-ratzilla` — do them together.
+  task that would justify it), `arboard` → `navigator.clipboard`, and a crate
+  split. **Carry-forward from `quick-input`:** `QUICK_MAP` is a pure
+  `char → label` table with no crossterm types, so ratzilla can reuse it verbatim;
+  and the sticky mode *sidesteps* ratzilla's keydown-only `on_key_event`
+  limitation rather than inheriting it, since nothing depends on observing a
+  modifier's release. It's oversized for one task and splits naturally into three
+  (extract core + `Msg` / web entry + clipboard / Trunk + deploy) — worth doing
+  once the crate-shape open question is settled.
