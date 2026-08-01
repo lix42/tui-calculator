@@ -48,7 +48,13 @@ Key differences from `main.rs` today:
 - **Built with Trunk**, target `wasm32-unknown-unknown`; the output is a folder of
   static assets (HTML + JS glue + `.wasm`) — no server process.
 
-## The four gaps to close
+## The three gaps to close
+
+> A fourth — `std::time::Instant` panicking on `wasm32-unknown-unknown` — was
+> **closed ahead of this task** on 2026-07-31: `ui_state.rs` now imports `Instant`
+> from `web-time` (a plain, deliberately un-gated `[dependencies]` entry, since
+> that module is shared with the native build). Nothing to do here; see the
+> comment on the dep in `Cargo.toml`.
 
 ### 1. Event-loop inversion → factor a pure "intent" mapper
 
@@ -95,35 +101,18 @@ that matter:
 - The X11-lifetime caveat documented for the native build is irrelevant on the
   web; the web has its own constraint (gesture requirement) instead.
 
-### 3. Time source: `std::time::Instant` panics on WASM
-
-The press-flash and copy-status timers use `std::time::Instant`
-(`flash_at`, `status`'s `Instant`, and `tick`'s `elapsed()` checks in
-`ui_state.rs`). `Instant::now()` **panics on `wasm32-unknown-unknown`** (no
-monotonic clock without a shim). Swap to the [`web-time`](https://crates.io/crates/web-time)
-crate, whose `Instant` is a drop-in that uses `performance.now()` on the web and
-re-exports `std`'s on native. One import change in `ui_state.rs` covers flash and
-status; it also unblocks `rainbow-mode`'s animation clock (same gap — coordinate
-so the swap happens once).
-
-Because that import lives in **shared** `ui_state.rs` — compiled by the native
-binary too — `web-time` must be a **plain `[dependencies]` entry, not
-wasm-target-gated**. It's the same drop-in on both targets (it re-exports `std`'s
-`Instant` on native), so a target-gated placement would leave the native build
-with an unresolved `web_time` import. Only `ratzilla`/`web-sys` are genuinely
-wasm-only.
-
-### 4. Cargo / crate structure
+### 3. Cargo / crate structure
 
 The native build needs `crossterm` + `arboard`; the web build needs `ratzilla` +
-`web-sys` + `web-time`, on a different target. Two viable shapes:
+`web-sys`, on a different target. (`web-time` is already a plain shared dep and
+stays put under either shape.) Two viable shapes:
 
 - **Target-gated deps in one crate** (lighter): keep one crate; put crossterm +
   arboard under `[target.'cfg(not(target_arch = "wasm32"))'.dependencies]` and
   ratzilla + web-sys under `[target.'cfg(target_arch = "wasm32")'.dependencies]`,
   with `main.rs` (native) vs a `lib.rs`/`#[wasm_bindgen(start)]` web entry chosen
-  by cfg. `web-time` stays in the plain `[dependencies]` (it's used by shared code
-  on both targets — see gap 3), not under either target table.
+  by cfg. Leave `web-time` in the plain `[dependencies]` where it is — it's used
+  by shared code on both targets, so target-gating it breaks native.
 - **Workspace split** (cleaner, recommended): a `calculator-core` lib
   (`action`, `app`, `eval`, `ui_state`, and the backend-agnostic parts of `ui`)
   plus two thin entry crates — `calculator` (native bin, crossterm) and
@@ -169,16 +158,14 @@ is **Cloudflare Pages** (static hosting), not a Worker:
 
 - **Spike first.** Stand up the minimal Ratzilla counter from the docs, confirm
   the toolchain and a Cloudflare Pages deploy end-to-end, *then* wire the
-  calculator core in. The unknowns are environmental (toolchain, clock panic,
-  clipboard gesture), not algorithmic — surface them on a throwaway before the
-  real port.
-- Sequence the refactors so native stays green at each step: (1) `web-time` swap
-  (native-neutral), (2) extract `calculator-core` + `Msg`/`apply_msg` with the
-  native bin still passing all tests, (3) add the web entry + cfg-gated clipboard,
-  (4) Trunk + deploy.
+  calculator core in. The unknowns are environmental (toolchain, clipboard
+  gesture), not algorithmic — surface them on a throwaway before the real port.
+- Sequence the refactors so native stays green at each step: (1) extract
+  `calculator-core` + `Msg`/`apply_msg` with the native bin still passing all
+  tests, (2) add the web entry + cfg-gated clipboard, (3) Trunk + deploy. These
+  three are the natural split if this task is broken up.
 - Best done **after** `layout-config` / `rainbow-mode` / `quick-input` settle, so
-  the core being extracted is stable — but the `web-time` swap is shared with
-  `rainbow-mode` and can land early either way.
+  the core being extracted is stable. All three have shipped.
 
 ## How to Test
 
@@ -198,10 +185,9 @@ is **Cloudflare Pages** (static hosting), not a Worker:
 - **app-ui-state** — the `Action` boundary and App/UiState split that make the
   core backend-agnostic; the `Msg` enum is the deferred follow-up named there and
   in `progress.md`.
-- **rainbow-mode** (shared) — both need the `web-time` clock swap; coordinate so
-  it happens once.
-- New crates: `ratzilla`, `web-sys`, `wasm-bindgen`, `web-time`; tooling: `trunk`,
-  `wrangler`.
+- **`web-time`** — already swapped in (2026-07-31), so the clock gap this task
+  once shared with `rainbow-animation` is closed. Neither blocks the other now.
+- New crates: `ratzilla`, `web-sys`, `wasm-bindgen`; tooling: `trunk`, `wrangler`.
 
 ## Open Questions
 

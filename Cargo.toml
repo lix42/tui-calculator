@@ -14,3 +14,10 @@ crossterm = { version = "0.29", features = ["event-stream"] }
 # Linux backend only covers X11/XWayland, so pure-Wayland sessions need it. The
 # feature's deps are Linux-gated upstream, so it's a no-op on macOS/Windows.
 arboard = { version = "3", features = ["wayland-data-control"] }
+# Drop-in `Instant` for the press flash and copy status (`ui_state.rs`).
+# `std::time::Instant::now()` *panics* on `wasm32-unknown-unknown`; web-time backs
+# it with `performance.now()` there and re-exports std's on native. Deliberately a
+# plain dependency, **not** target-gated: `ui_state.rs` is shared code the native
+# binary compiles too, so gating it on wasm would leave native with an unresolved
+# `web_time` import.
+web-time = "1.1.0"

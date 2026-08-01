@@ -1,5 +1,17 @@
 # app-result-state: Refactor Result Field to a Proper Enum
 
+> **Done** — absorbed by `app-display-split`; verified and marked `[x]` on
+> 2026-07-31. **The spec below was not implemented as written.** There is no
+> `EvalResult` type. `app.rs` uses `Mode { Editing, Evaluated(String),
+> Error(String) }` instead, which meets every goal here: value and error are
+> distinguished by variant (no `parse::<f64>()` round-trip), the model holds a raw
+> `f64` in `Token::Number`, and `format_number` runs at display time inside
+> `display_string`.
+>
+> Note that `Mode::Evaluated`'s `String` is the *input expression* snapshot for the
+> display's top line — **not** the result, which lives in `expr`. Read the sections
+> below as the original motivation, not as a description of the code.
+
 ## Background
 
 `App.result` is currently `Option<String>`. It conflates two distinct states — a

@@ -151,11 +151,14 @@ container this way up front makes the stretch a one-line policy flip.
 - `digit_color` stays a **pure `(d) -> Color`**; effects modulate on top of it.
   Only the global drift ever needs a phase, and only while it's running.
 
-> **Cross-cutting note:** the time source here is the same gap `web-ratzilla`
-> hits — `std::time::Instant` **panics on `wasm32-unknown-unknown`**. If rainbow
-> animation lands before the web port, prefer the `web-time` crate's `Instant`
-> (a drop-in) from the start so the web build doesn't have to retrofit it. See
-> `web-ratzilla.md`.
+> **Time source — already settled.** `ui_state.rs` imports `Instant` from
+> `web-time`, not `std::time` (swapped 2026-07-31, ahead of both this pass and
+> `web-ratzilla`, because `std`'s panics on `wasm32-unknown-unknown`). Use the
+> module's existing import; there is no clock decision left to make here.
+
+This design now lives in its own task — **`rainbow-animation`** — since this one
+shipped as the static pass. See `docs/tasks/rainbow-animation.md`; the sections
+above stay here as the record of what was designed alongside the static palette.
 
 ## Implementation Notes
 
