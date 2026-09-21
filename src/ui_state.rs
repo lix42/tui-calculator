@@ -1,9 +1,10 @@
-//! UI state: button-grid focus, the momentary press flash, the on-screen
-//! geometry used for mouse hit-testing, and the copy affordance + its status.
+//! UI state: button-grid focus, the transient visual effects in flight, the
+//! on-screen geometry used for mouse hit-testing, and the copy affordance + its
+//! status.
 //!
 //! This is the rendering/input-routing half of what used to live in `App`. It
 //! owns the active [`Keypad`], where focus currently sits (as a lattice cell),
-//! which button is flashing, and the screen rect of every button. `App` keeps
+//! which [`Effect`]s are running, and the screen rect of every button. `App` keeps
 //! only the calculator state (`expr` / `current` / `mode`); the two have
 //! different lifecycles and concerns.
 
@@ -24,6 +25,132 @@ const FLASH_DURATION: Duration = Duration::from_millis(120);
 /// Longer than `FLASH_DURATION` because this is text the user needs to *read*,
 /// not a momentary blink. Cleared by the same `tick` that expires the flash.
 const STATUS_DURATION: Duration = Duration::from_millis(1500);
+
+/// How long a press ripple takes to cross the pad and fade. Longer than
+/// `FLASH_DURATION` — the chip on the pressed key is a blink, the wave leaving it
+/// has ground to cover.
+///
+/// **The run loop's 100 ms poll is the pacing budget**: an idle terminal repaints
+/// at ~10 fps, so this duration buys the ripple about eight frames. That is the
+/// constraint the intensity curve is tuned against — a curve that is smooth in
+/// the limit can strobe at eight samples. It also sets the wall-clock meaning of
+/// the curve's normalized constants (see `ui::RIPPLE_RING_DELAY`), so changing it
+/// re-times the wave without changing its shape.
+const RIPPLE_DURATION: Duration = Duration::from_millis(800);
+
+/// How long one cycle of the always-on display breath takes.
+///
+/// Deliberately slow. Every other effect here is event-driven and quiescent by
+/// default; this is the single exception that runs forever, so it has to sit far
+/// below the threshold where motion draws the eye — long enough that you notice
+/// it only when looking for it.
+const BREATH_PERIOD: Duration = Duration::from_millis(4200);
+
+/// How long the hue drift takes to sweep the palette and settle back.
+///
+/// Longer than the ripple: the ripple acknowledges a keystroke, while this marks
+/// a finished calculation, and a rotation fast enough to catch the eye would read
+/// as a glitch rather than a flourish.
+const DRIFT_DURATION: Duration = Duration::from_millis(1400);
+
+/// What a transient visual effect *is*, plus whatever that kind of effect needs
+/// to know where it happened.
+///
+/// Each variant carries **its own** origin data rather than the whole enum
+/// sharing one `origin` field. A press is anchored to a lattice cell, but a
+/// global effect has no cell at all — a shared field would need a "no origin"
+/// case that every global variant has to remember to ignore. Per-variant
+/// payloads make the meaningless combination unrepresentable instead, the same
+/// reason [`crate::action::Digit`] is a newtype rather than a checked `u8`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EffectKind {
+    /// The momentary "pressed" look on an activated button. Held as the lattice
+    /// cell rather than a button index because a pad switch invalidates cells
+    /// (see [`UiState::set_layout`]), and because a spatial effect needs a
+    /// position on the lattice to measure from.
+    Press { cell: (usize, usize) },
+    /// A wave radiating outward from the pressed button across the rest of the
+    /// pad. Separate from [`Press`](EffectKind::Press) — which stays the short,
+    /// sharp chip on the key you actually hit — because the two run on different
+    /// clocks: the chip is over in `FLASH_DURATION` while the wave needs long
+    /// enough to cross the lattice.
+    Ripple { cell: (usize, usize) },
+    /// A rotation of the whole palette's hues, fired by a successful `=`. Global
+    /// — it belongs to no cell, which is exactly why [`cell`](EffectKind::cell)
+    /// returns `None` for it and a pad switch leaves it running.
+    Drift,
+}
+
+impl EffectKind {
+    /// How long this kind of effect stays visible.
+    ///
+    /// Derived from the kind rather than stored on each `Effect`: the duration
+    /// is a property of *what the effect is*, so a per-instance copy would be a
+    /// second source of truth free to disagree with the constant. A total match,
+    /// so adding a variant is a compile error here rather than a silent default.
+    fn duration(self) -> Duration {
+        match self {
+            EffectKind::Press { .. } => FLASH_DURATION,
+            EffectKind::Ripple { .. } => RIPPLE_DURATION,
+            EffectKind::Drift => DRIFT_DURATION,
+        }
+    }
+
+    /// The lattice cell this effect is anchored to, or `None` if it's global.
+    ///
+    /// Drives what survives a pad switch: a cell-anchored effect names a cell on
+    /// the pad being left (which may not even exist on the new one), while a
+    /// global effect is unaffected by the change of lattice.
+    fn cell(self) -> Option<(usize, usize)> {
+        match self {
+            EffectKind::Press { cell } | EffectKind::Ripple { cell } => Some(cell),
+            EffectKind::Drift => None,
+        }
+    }
+}
+
+/// One transient visual effect in flight: what it is, and when it began.
+///
+/// The renderer derives intensity from how far through its lifetime the effect
+/// is, so `started` plus the kind's [`duration`](EffectKind::duration) is the
+/// whole of its state — there is no per-frame bookkeeping to keep in step.
+#[derive(Debug, Clone, Copy)]
+pub struct Effect {
+    kind: EffectKind,
+    started: Instant,
+}
+
+impl Effect {
+    /// Begin an effect now.
+    fn new(kind: EffectKind) -> Self {
+        Self {
+            kind,
+            started: Instant::now(),
+        }
+    }
+
+    /// What this effect is, and where it started from.
+    pub fn kind(self) -> EffectKind {
+        self.kind
+    }
+
+    /// How far through its lifetime the effect is: `0.0` the instant it begins,
+    /// rising to `1.0` as it expires.
+    ///
+    /// This is the **only** time input the renderer gets — it never sees an
+    /// `Instant`. That keeps every animation curve a pure function of a
+    /// normalized phase, so the curves are unit-testable without a clock or a
+    /// sleep, and the wall-clock pacing stays a concern of this module alone.
+    pub fn progress(self) -> f32 {
+        let total = self.kind.duration().as_secs_f32();
+        (self.started.elapsed().as_secs_f32() / total).clamp(0.0, 1.0)
+    }
+
+    /// Whether the effect has outlived its kind's duration and should be dropped.
+    fn is_expired(self) -> bool {
+        self.started.elapsed() >= self.kind.duration()
+    }
+}
 
 /// How the digits are colored. A **presentation-only** toggle — it changes no
 /// calculator state, so it lives on `UiState` (the rendering half), not `App`.
@@ -66,9 +193,16 @@ pub struct UiState {
     // re-pick for the current size without the size being threaded through the
     // event handler. Updated by `auto_select` (even while pinned).
     term_size: (u16, u16),
-    focus: (usize, usize),         // lattice cell holding focus
-    flash: Option<(usize, usize)>, // lattice cell of the button showing its press look
-    flash_at: Instant,             // when the current flash began (see FLASH_DURATION)
+    focus: (usize, usize), // lattice cell holding focus
+    // The transient visual effects currently in flight — today just the press
+    // flash. A bounded collection rather than a single slot so that letting
+    // effects *compose* is a change to `insert_effect`'s policy alone, not a
+    // change to how the state is stored. Expired entries are dropped by `tick`.
+    effects: Vec<Effect>,
+    // When the process started animating, i.e. the zero point of the always-on
+    // breath's phase. Fixed for the lifetime of the app — it is a clock origin,
+    // not a timer, so nothing ever resets it.
+    animation_start: Instant,
     // Screen rect of each button (indexed like `keypad.buttons()`), captured by
     // the UI each draw. Mouse hit-testing reads these (see `button_at`).
     button_rects: Vec<Rect>,
@@ -108,8 +242,8 @@ impl UiState {
             override_layout: None,
             term_size: (0, 0),
             focus,
-            flash: None,
-            flash_at: Instant::now(),
+            effects: Vec::new(),
+            animation_start: Instant::now(),
             button_rects,
             copy_rect: Rect::ZERO,
             status: None,
@@ -233,8 +367,10 @@ impl UiState {
     pub fn set_layout(&mut self, i: usize) {
         self.layout = i % self.layouts.len();
         self.focus = resolve_focus(self.focus, &self.layouts[self.layout]);
-        // The press flash belongs to the pad we're leaving; drop it.
-        self.flash = None;
+        // Cell-anchored effects name a cell on the pad we're leaving — which may
+        // not exist on the new one — so drop them. Global effects have no cell to
+        // invalidate and ride through the switch untouched.
+        self.effects.retain(|e| e.kind.cell().is_none());
         // `button_rects` is per-pad; resize to the new pad so hit-testing can't
         // reference the old pad's buttons before the next draw refills them.
         self.button_rects = vec![Rect::ZERO; self.layouts[self.layout].button_count()];
@@ -278,10 +414,17 @@ impl UiState {
         self.keypad().button_index_at(self.focus.0, self.focus.1) == idx
     }
 
-    /// Whether button `idx` is currently showing its pressed flash.
+    /// Whether button `idx` is currently showing its pressed flash. Resolved
+    /// through the keypad's occupancy map, so a spanning button flashes as one
+    /// unit from whichever of its cells was pressed.
     pub fn is_button_pressed(&self, idx: usize) -> bool {
-        self.flash
-            .is_some_and(|(r, c)| self.keypad().button_index_at(r, c) == idx)
+        self.effects.iter().any(|e| match e.kind {
+            EffectKind::Press { cell } => self.keypad().button_index_at(cell.0, cell.1) == idx,
+            // The ripple is drawn by modulating every button's color, not by the
+            // pressed look — a rippled key is not a pressed key. The drift is
+            // global and touches no single button at all.
+            EffectKind::Ripple { .. } | EffectKind::Drift => false,
+        })
     }
 
     /// Record that `label` was just activated: focus follows it and its press
@@ -290,9 +433,58 @@ impl UiState {
     pub fn register_press(&mut self, label: &str) {
         if let Some(pos) = self.keypad().position_of(label) {
             self.focus = pos;
-            self.flash = Some(pos);
-            self.flash_at = Instant::now();
+            // One press starts two effects on two clocks: the sharp chip on the
+            // key itself, and the slower wave leaving it.
+            self.start_effects([
+                EffectKind::Press { cell: pos },
+                EffectKind::Ripple { cell: pos },
+            ]);
         }
+    }
+
+    /// Start `kinds` together as one trigger's worth of animation, superseding
+    /// whatever was in flight.
+    ///
+    /// **Latest-wins**: a new trigger clears the collection rather than layering
+    /// onto it, so fresh input cancels a running effect instead of compounding
+    /// with it. Letting ripples *compose* — retain the live ones and append up to
+    /// a cap, so rapid input leaves overlapping waves — is a change to this
+    /// policy and nothing else. That is the whole reason `effects` is a
+    /// collection rather than a single slot: the stretch goal is an insertion
+    /// rule here, not a different shape of state everywhere else.
+    fn start_effects(&mut self, kinds: impl IntoIterator<Item = EffectKind>) {
+        self.effects.clear();
+        self.effects.extend(kinds.into_iter().map(Effect::new));
+    }
+
+    /// The effects currently in flight, for the renderer to derive intensities
+    /// from. Ordered by insertion, which is also priority order for a trigger
+    /// that starts several.
+    pub fn effects(&self) -> &[Effect] {
+        &self.effects
+    }
+
+    /// Start the global hue drift that marks a successful evaluation.
+    ///
+    /// **Joins** the effects already in flight rather than replacing them, unlike
+    /// [`start_effects`](Self::start_effects): pressing `=` is one trigger, and
+    /// its press flash, ripple and drift all belong to it. Call it *after*
+    /// `register_press` — that's the call that clears the previous trigger, so
+    /// the reverse order would throw this away immediately.
+    pub fn register_drift(&mut self) {
+        self.effects.push(Effect::new(EffectKind::Drift));
+    }
+
+    /// A free-running `0.0..1.0` phase for the always-on display breath, cycling
+    /// every [`BREATH_PERIOD`].
+    ///
+    /// Unlike every other effect this has no trigger and never expires, so it
+    /// reads the wall clock directly rather than living in `effects` — modelling
+    /// a thing that is always running as a thing that was just started would mean
+    /// re-inserting it forever.
+    pub fn breath_phase(&self) -> f32 {
+        let period = BREATH_PERIOD.as_secs_f32();
+        (self.animation_start.elapsed().as_secs_f32() / period).fract()
     }
 
     /// Record the screen rect of every button. Called by the UI once per draw so
@@ -348,17 +540,27 @@ impl UiState {
         self.status = None;
     }
 
-    /// Expire the press flash and the status message once each has been visible
+    /// Expire finished effects and the status message once each has been visible
     /// for its duration. Called once per run-loop iteration before drawing.
     pub fn tick(&mut self) {
-        if self.flash.is_some() && self.flash_at.elapsed() >= FLASH_DURATION {
-            self.flash = None;
-        }
+        self.effects.retain(|e| !e.is_expired());
         if let Some((_, at)) = self.status
             && at.elapsed() >= STATUS_DURATION
         {
             self.status = None;
         }
+    }
+
+    /// The lattice cell currently showing the press flash, or `None`. Test-only:
+    /// production code asks [`is_button_pressed`](Self::is_button_pressed) rather
+    /// than reaching for the cell, so this exists to keep the flash tests
+    /// asserting on the cell they always did.
+    #[cfg(test)]
+    fn flash_cell(&self) -> Option<(usize, usize)> {
+        self.effects.iter().find_map(|e| match e.kind {
+            EffectKind::Press { cell } => Some(cell),
+            EffectKind::Ripple { .. } | EffectKind::Drift => None,
+        })
     }
 
     /// The focused lattice cell. Test-only accessor for the input-routing tests
@@ -649,10 +851,10 @@ mod tests {
         let mut ui = UiState::new();
         ui.auto_select(40, 40); // standard
         ui.register_press("7"); // start a flash
-        let flash = ui.flash;
+        let flash = ui.flash_cell();
         assert!(flash.is_some());
         ui.auto_select(40, 40); // same shape → same pad → no churn
-        assert_eq!(ui.flash, flash); // flash not dropped
+        assert_eq!(ui.flash_cell(), flash); // flash not dropped
     }
 
     #[test]
@@ -707,9 +909,9 @@ mod tests {
         // doesn't have, index its occupancy map out of bounds). set_layout drops it.
         let mut ui = UiState::new();
         ui.register_press("5"); // flash on standard's (2, 1)
-        assert!(ui.flash.is_some());
+        assert!(ui.flash_cell().is_some());
         ui.set_layout(1); // tall
-        assert_eq!(ui.flash, None);
+        assert_eq!(ui.flash_cell(), None);
     }
 
     #[test]
@@ -727,7 +929,7 @@ mod tests {
         let mut ui = UiState::new(); // focus starts on "=" at (4, 3)
         ui.register_press("5");
         assert_eq!(ui.focus, (2, 1)); // focus followed the input
-        assert_eq!(ui.flash, Some((2, 1))); // and that cell is flashing
+        assert_eq!(ui.flash_cell(), Some((2, 1))); // and that cell is flashing
     }
 
     #[test]
@@ -757,7 +959,7 @@ mod tests {
         let mut ui = UiState::new();
         ui.register_press("?");
         assert_eq!(ui.focus, (4, 3)); // unchanged
-        assert_eq!(ui.flash, None);
+        assert_eq!(ui.flash_cell(), None);
     }
 
     #[test]
@@ -831,6 +1033,6 @@ mod tests {
         let mut ui = UiState::new();
         ui.register_press("5");
         ui.tick();
-        assert_eq!(ui.flash, Some((2, 1)));
+        assert_eq!(ui.flash_cell(), Some((2, 1)));
     }
 }

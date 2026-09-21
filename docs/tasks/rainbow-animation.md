@@ -10,6 +10,24 @@ settle back to the static colors.
 `rainbow-mode` shipped the static per-glyph palette (`ui::glyph_color`) and closed
 as done. This task is the second half of that design.
 
+## Decided, and shipped — read before the design below
+
+Shipped 2026-09-20. The design below is the *pre-implementation* spec and three
+of its details were superseded; the shipped shape and the reasoning are in the
+`rainbow-animation` section of `docs/progress.md`. In short:
+
+- **`Effect` carries no `duration`** and no shared `origin`. It is
+  `Effect { kind, started }` with
+  `EffectKind = Press { cell } | Ripple { cell } | Drift` — per-variant payloads,
+  so the global `Drift` needs no meaningless "no origin" case, and the duration is
+  derived from the kind rather than copied per instance.
+- **The ripple's distance metric is `Keypad::button_distance`** — Manhattan
+  distance measured rect-to-rect, i.e. to the *nearest* cell of a spanning button,
+  neither of the two options ("pressed cell" / "anchor") this file offered.
+- **Mono does not suppress effects.** Only the hue drift is rainbow-only; the
+  ripple and the breath ride on HSLuv lightness at zero saturation, so one code
+  path serves both modes.
+
 ## Design
 
 **The design is already written** — see the "Animation (a follow-up, not part of

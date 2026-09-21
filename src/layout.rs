@@ -131,6 +131,25 @@ impl Keypad {
         self.occupancy[row][col]
     }
 
+    /// How many lattice cells apart buttons `a` and `b` are — `0` for the same
+    /// button, `1` for orthogonal neighbours, and the Manhattan distance between
+    /// their nearest cells in general.
+    ///
+    /// Measured **rect-to-rect, not anchor-to-anchor**, which is what makes it
+    /// correct for spanning buttons: a wide `0` or tall `=` is equidistant from
+    /// its neighbours along its whole side, rather than radiating lopsidedly from
+    /// its top-left corner. For a `1×1` button this degenerates to the plain
+    /// distance between two cells, so there is no spanning special case — the
+    /// general form *is* the simple one.
+    ///
+    /// Computed from the span rectangles directly rather than by scanning cells,
+    /// so it stays O(1) per pair; the ripple effect calls it once per button per
+    /// frame.
+    pub fn button_distance(&self, a: usize, b: usize) -> usize {
+        let (a, b) = (self.button(a), self.button(b));
+        gap(a.row, a.row_span, b.row, b.row_span) + gap(a.col, a.col_span, b.col, b.col_span)
+    }
+
     /// The cell one step from `(row, col)` in direction `dir`, or `None` if that
     /// step would leave the lattice.
     ///
@@ -208,6 +227,21 @@ impl Keypad {
         }
         (-((need_h * w - h * need_w).abs() * SCALE / need_w)) as i32
     }
+}
+
+/// The gap along one axis between two spans `[a, a + a_span)` and
+/// `[b, b + b_span)`: `0` when they overlap, otherwise how many cells separate
+/// their nearest edges. The per-axis half of [`Keypad::button_distance`].
+///
+/// Overlapping spans give `0` rather than a negative, which is what lets the two
+/// axes simply add: two buttons in the same row are separated by their column
+/// gap alone.
+fn gap(a: u16, a_span: u16, b: u16, b_span: u16) -> usize {
+    // Saturating, so the "b is entirely past a" and "a is entirely past b" cases
+    // are the same expression mirrored — and an overlap saturates to 0 on both.
+    let a_past_b = a.saturating_sub(b + b_span - 1);
+    let b_past_a = b.saturating_sub(a + a_span - 1);
+    (a_past_b + b_past_a) as usize
 }
 
 /// Compile an occupancy grid into a [`Keypad`], validating the invariants the
@@ -312,6 +346,59 @@ mod tests {
                 .iter()
                 .all(|b| b.row_span == 1 && b.col_span == 1)
         );
+    }
+
+    #[test]
+    fn button_distance_on_a_plain_pad_is_the_cell_distance() {
+        // Every standard-pad key is 1×1, so rect-to-rect degenerates to plain
+        // Manhattan distance between the two cells — the baseline the spanning
+        // cases below deviate from.
+        let k = Keypad::standard();
+        let five = k.button_index_at(2, 1);
+        assert_eq!(k.button_distance(five, five), 0); // itself
+        assert_eq!(k.button_distance(five, k.button_index_at(2, 2)), 1); // "6", beside it
+        assert_eq!(k.button_distance(five, k.button_index_at(1, 1)), 1); // "8", above it
+        assert_eq!(k.button_distance(five, k.button_index_at(1, 2)), 2); // "9", diagonal
+        assert_eq!(k.button_distance(five, k.button_index_at(4, 3)), 4); // "=", far corner
+    }
+
+    #[test]
+    fn button_distance_measures_to_the_nearest_cell_of_a_span() {
+        // The case the metric exists for. On the tall pad the bottom row is
+        // ["=", "=", "+"], so "=" spans cols 0–1. Anchor-to-anchor from "+" at
+        // (6, 2) would read 2; rect-to-rect reads 1, because "=" occupies the
+        // cell right next to it. A ripple from "+" must reach "=" immediately.
+        let k = Keypad::tall();
+        let eq = k.button_index_at(6, 0);
+        let plus = k.button_index_at(6, 2);
+        assert_eq!(k.button_distance(eq, plus), 1);
+        // And it is symmetric — distance is a property of the pair, not a
+        // direction of travel.
+        assert_eq!(k.button_distance(plus, eq), 1);
+    }
+
+    #[test]
+    fn button_distance_is_uniform_along_a_spans_whole_side() {
+        // A wide button is equidistant from everything directly above it, which
+        // is the visual point: the ripple leaves a spanning key as a flat front,
+        // not a cone radiating from its top-left corner. Both cells of the tall
+        // pad's wide "=" have a neighbour directly above, and both are 1 away.
+        let k = Keypad::tall();
+        let eq = k.button_index_at(6, 0); // spans (6,0)–(6,1)
+        assert_eq!(k.button_distance(eq, k.button_index_at(5, 0)), 1);
+        assert_eq!(k.button_distance(eq, k.button_index_at(5, 1)), 1);
+    }
+
+    #[test]
+    fn button_distance_spans_the_other_axis_too() {
+        // The row-span counterpart: on the wide pad "=" is 2×1 at col 6 spanning
+        // rows 1–2, so it sits 1 away from the keys beside *either* of its rows.
+        let k = Keypad::wide();
+        let eq = k.button_index_at(1, 6);
+        assert_eq!(k.button_distance(eq, k.button_index_at(1, 5)), 1);
+        assert_eq!(k.button_distance(eq, k.button_index_at(2, 5)), 1);
+        // Directly above the span's top cell is also 1 — not 0, and not 2.
+        assert_eq!(k.button_distance(eq, k.button_index_at(0, 6)), 1);
     }
 
     #[test]

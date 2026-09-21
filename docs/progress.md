@@ -715,34 +715,185 @@ web-time re-exports `std`'s `Instant` on native and only swaps in
   `[dependencies]`; only `ratzilla`/`web-sys` are genuinely wasm-only. Rationale is
   in a comment on the dep so it can't be "tidied" later.
 
-## rainbow-animation — not started
+## rainbow-animation — `src/ui_state.rs`, `src/ui.rs`, `src/layout.rs`, `src/main.rs`
 
-**Status:** not started
+**Status:** done · 2026-09-20 · **the ripple's look changed after the user's visual
+pass** (see "Review round" below) — the wave they approved was the buggy one, so
+the current appearance is not yet eyeballed.
 
-Goal: the event-driven effect model deferred out of `rainbow-mode` — generalize
-the press flash into `Effect { kind, origin, started, duration }`, then layer
-ripple / hue-drift / display-breath on top, with the two focus-triggered effects
-held for a later trial. Design lives in the "Animation" section of
-`docs/tasks/rainbow-mode.md`; the task file is `docs/tasks/rainbow-animation.md`.
+The event-driven effect model deferred out of `rainbow-mode`. 157 tests (was 136
+at `quick-input`), `cargo clippy`/`fmt` clean. Landed in the two checkpoints the
+task file prescribed.
 
-Carry-forward for whoever picks it up:
-- The clock question is closed (see the `web-time` section above) — use
-  `ui_state.rs`'s existing `Instant` import.
-- Three things changed since the design was written: `Theme` (Dark|Light) now
-  exists and effects must stay legible on **both**; `ColorMode` defaults to
-  `Rainbow`; and the pad is no longer a fixed 5×4, so a ripple's distance metric
-  has to read the *active* keypad's lattice and decide how spanning buttons
-  (wide `0`, tall `=`) measure.
+### The three open questions, settled
+
+- **`Effect` shape** — per-variant payloads, as the task file suspected. `Effect
+  { kind, started }` with `EffectKind = Press { cell } | Ripple { cell } | Drift`;
+  a shared `origin` field would need a meaningless "no origin" case for the global
+  `Drift`. Went one step further than the spec and **dropped the stored
+  `duration`**, deriving it from the kind — the duration is a property of what the
+  effect *is*, so a per-instance copy is a second source of truth free to disagree
+  with the constant.
+- **Does `Mono` suppress effects?** — **No, it supports them** (user's call). This
+  cost nothing in the end: `ripple_color` and `breath_color` build in HSLuv with
+  **lightness** as the varying term, and HSLuv at zero saturation *is* a gray, so
+  mono rides the identical code path with `saturation = 0.0` — no branch. Only the
+  hue drift is rainbow-only, because mono has no hues to rotate.
+- **Ripple origin on a spanning button** — neither of the two options the task file
+  offered. "Pressed cell" isn't available (`register_press` takes a *label* and
+  resolves via `position_of`, so only the anchor is ever known — the mouse path
+  goes index → label → anchor too), and "anchor" would radiate from the top-left
+  corner of a wide `=`. Instead `Keypad::button_distance` measures **rect-to-rect**:
+  distance to the *nearest cell* of the pressed button. Degenerates to plain cell
+  distance for a `1×1` key, so it's a strict generalization with no special case
+  and no new plumbing.
+
+### Checkpoint 1 — the effect model (no visible change)
+
+`flash: Option<(usize,usize)>` + `flash_at` → `effects: Vec<Effect>`. All five
+existing flash tests kept their assertions, reading through a new `#[cfg(test)]
+flash_cell()`. 136 green throughout.
+
+- **A `Vec` for a collection that only ever holds one trigger's effects** is
+  deliberate: it makes the "ripples compose" stretch an insertion-policy flip in
+  `start_effects` rather than a change to how the state is stored, exactly as the
+  design intended.
+- `set_layout` drops only **cell-anchored** effects (`kind.cell().is_some()`),
+  which is behavior-identical today and lets the later global `Drift` ride through
+  a pad switch for free.
+
+### Checkpoint 2 — the effects
+
+- **Ripple** (`EffectKind::Ripple`, 800 ms) — kept **separate** from the 120 ms
+  `Press` chip because the two run on different clocks: the chip is a blink, the
+  wave has ground to cover. One press starts both via `start_effects`.
+- **Curve shape was the user's contribution** (learning mode): given three
+  candidates — travelling band / decaying glow / per-ring delayed flash — they
+  picked the **per-ring delayed flash**. Landed verbatim; only the constants moved.
+- **The constants had a real bug, and it's the interesting one.** Ring `d` fades
+  out at `phase = delay*d + fade`. With the sketch values (`0.12`/`0.4`) that's
+  `1.36` for the 8-cell corner-to-corner distance on the tall/wide pads — but
+  `progress()` clamps `phase` at `1.0`, so the outermost ring was still at ~90%
+  brightness when the effect expired and vanished. **It is not fixable by
+  lengthening `RIPPLE_DURATION`**: phase is normalized, so duration sets
+  wall-clock speed while the truncation lives entirely in whether two
+  dimensionless constants sum past 1.0. Fixed by `0.075`/`0.25` at a 800 ms
+  duration — *identical* 60 ms-per-ring propagation and ~200 ms fade to what the
+  user chose, but the tail now completes, with ~8 frames instead of ~5 at the
+  100 ms poll. Guarded by `ripple_completes_before_expiring_on_every_pad`, which
+  computes each shipped pad's real max distance (so a future bigger pad fails the
+  test instead of shipping the pop); verified non-vacuous by restoring the old
+  constants and watching it fail at `0.5999999`.
+- **`apply_ripple` yields entirely on a focused/pressed key.** Found during
+  review: the pressed key is always at distance 0, i.e. full ripple intensity at
+  the exact instant its own flash fires, so without the guard every press
+  overwrote its `loud` chip border with a mid-lightness hue — undoing
+  `rainbow-mode`'s light-theme legibility work.
+- **Hue drift** (`EffectKind::Drift`, 1400 ms, rainbow-only) — fired from
+  `activate` in `main.rs` on `Action::Equals && app.copy_text().is_some()`, the
+  existing read-only "is there a result?" question, so an error can't claim a
+  success. `drift_offset` is a **half-sine: zero at both ends**, so the palette
+  leaves and returns to its resting hues continuously — the same continuity
+  lesson the ripple's tail taught, applied up front. `DRIFT_SPAN = 54°` is ~1.5
+  steps of the 36° digit grid: the palette visibly moves, but a digit lands
+  *between* its neighbours' hues rather than squarely on one.
+- **`Palette { theme, drift }` replaced the bare `Theme`** in every hue-building
+  signature. `frame_palette` resolves it once per frame, so the display and the
+  grid can't disagree — a drift that reached one and not the other would read as a
+  rendering bug. Mechanical but wide; the alternative was threading a second
+  parameter through a dozen signatures and doing it again for the next
+  palette-wide modulation.
+- **Display breath** (always-on, 4200 ms) — the one effect that is *not* an
+  `Effect`. It has no trigger and never expires, so it reads a free-running
+  `animation_start` clock via `UiState::breath_phase()`; modelling something
+  always running as something just started would mean re-inserting it forever.
+  A full sine so the loop point is invisible, on the display *border* so it can
+  never make the expression harder to read, small amplitude because it is the only
+  thing on screen that moves unprompted.
+
+### Review round (`/code-review --fix`, 2026-09-20) — one real visual bug
+
+**The ripple was darkening the border, not lighting it.** `ripple_color`'s
+lightness ramp was anchored at absolute HSLuv endpoints (`Dark: 20→90`) while a
+resting button's `border_style` is `Style::new()` — **no `fg` at all**, so it
+renders in the terminal's *default foreground*, already ~L 80 on a dark theme. With
+`apply_ripple` pre-scaling by `RIPPLE_CEILING = 0.55`, the wave peaked at L 58.5 and
+faded toward L 21: every ring dimmed the border below its resting brightness, then
+**snapped back to bright** when it crossed `RIPPLE_FLOOR` and `apply_ripple` handed
+back the unstyled base. Once per ring, per press — the same pop the ring-fade
+invariant exists to prevent, at the other boundary.
+
+The fix generalizes the continuity lesson: **anchor the ramp at the resting
+appearance**, so the hand-off where painting stops is invisible, then move away
+from the background (`RESTING_BORDER_L_*` → `RIPPLE_PEAK_L_*`). `RIPPLE_CEILING`
+is gone — with the endpoints now naming the actually-reachable range, a separate
+scale factor only made the declared peak unreachable.
+
+Fixing it surfaced a **second** bug the first fix walked into: peaking at L 100
+made the rainbow ripple *pure white regardless of hue* (HSLuv at either extreme is
+white/black at any saturation), erasing the hue at its most visible moment — the
+same "no contrast left at the extreme" trap as the light-theme `loud`/`knockout`
+bug. So the peak now stops short (93 / 9) and **saturation ramps with intensity**
+too: the border grows *into* its hue from the resting gray. Rainbow is carried by
+saturation (there is little lightness headroom above an already-bright resting
+border), mono by lightness (it has no hue to grow into, so `full_saturation` is 0)
+— still one code path, each mode using the channel it actually has.
+
+**Why the tests didn't catch it:** `ripple_brightens_on_dark_and_darkens_on_light`
+compared two *ripple* colors to each other and never to the resting style, so it
+passed vacuously while the ripple ran backwards. Two colors differing tells you
+nothing about direction. Rewritten to assert on the lightness numbers via a new
+pure `ripple_lightness`, plus `ripple_hands_off_to_the_resting_border_without_a_jump`
+pinning the continuity contract between the ramp and the floor.
+
+Also fixed in the same round:
+- `drift_is_rainbow_only_but_the_theme_still_applies` was **clock-flaky**: it
+  asserted `drift != 0.0` immediately after `register_drift()`, which only held
+  because `elapsed()` happened to exceed 0. `drift_offset(0.0)` is exactly `0.0`,
+  so a coarse clock fails it — not hypothetical here, since `Instant` comes from
+  `web-time` and `performance.now()` is deliberately quantized on wasm. Split the
+  pure `palette_for(mode, theme, drift_phase)` out of `frame_palette` and assert at
+  a chosen phase, keeping one live-wiring assertion that doesn't depend on elapsed
+  time. **Lesson for the rest of this feature:** `progress()`-based assertions must
+  pick their own phase, never read one from a clock.
+- Two stale doc comments (a "500 ms / five frames" pacing line left over from
+  before the constants moved to 800 ms, and `RIPPLE_CEILING`'s description).
+- `docs/tasks/rainbow-animation.md` still presented the superseded design as the
+  plan; it now opens with the three decisions that diverged, per the precedent
+  `quick-input.md` set.
+
+**Knowingly not fixed — a policy question, not a defect.** Any keypress during the
+1400 ms drift calls `start_effects`, which clears the collection, so the drift dies
+mid-sweep and every hue snaps back by up to 54° in one frame — precisely the
+discontinuity `drift_offset`'s half-sine is shaped to avoid at its natural end.
+Cancelling *is* the documented latest-wins policy from the design, so changing it
+is a design decision rather than a bug fix. If it reads badly in practice, the
+one-line change is to `retain` the global `Drift` in `start_effects`.
+
+### Notes for whoever picks this up next
+
+- **The motion itself is verified by eye, not by test.** Everything above is
+  unit-tested, but the end-to-end wiring *in motion* isn't: a `TestBackend` render
+  right after a press only ever shows distance 0 (ring 1 hasn't started at
+  `phase ≈ 0`), so asserting a travelling ring needs a `sleep`, and this repo
+  deliberately has none — see `tick_keeps_fresh_flash`. So the pure curves are
+  guarded, the *feel* is not. **Re-tune by eye after touching any constant**
+  (`RIPPLE_RING_DELAY`/`_FADE`, `DRIFT_SPAN`, `BREATH_PERIOD`, `breath_color`'s
+  lightness range) — a green suite does not mean it still looks right.
+- **The two deferred focus-triggered effects** (directional wave on `move_focus`,
+  breath on the focused cell) are still deferred, per the design — they use the
+  same `Effect` abstraction, so trialling them costs no plumbing.
+- **The "ripples compose" stretch** is untouched: flip `start_effects` to retain
+  live ripples and append up to a cap.
+- No user-facing keys changed, so `README.md` needed no update.
 
 ## Next Task
 
 Every feature task is now done — the layout arc (`layout-config` →
 `layout-registry` → `layout-auto`), `focus-per-button`, `rainbow-mode` (static
-pass), and `quick-input`. **Two tasks remain, and they're independent** — the
-`web-time` swap that used to couple them has landed, so either order works.
+pass), `quick-input`, and `rainbow-animation` (2026-09-20). **`web-ratzilla` is
+the only task left.**
 
-- **`rainbow-animation`** — the smaller of the two and immediately executable; see
-  its section above.
 - **`web-ratzilla`** — Ratzilla WASM build + Cloudflare Pages deploy. Known gaps:
   event-loop inversion → a `Msg` enum (see the deferred note above — this is the
   task that would justify it), `arboard` → `navigator.clipboard`, and a crate
@@ -753,3 +904,16 @@ pass), and `quick-input`. **Two tasks remain, and they're independent** — the
   modifier's release. It's oversized for one task and splits naturally into three
   (extract core + `Msg` / web entry + clipboard / Trunk + deploy) — worth doing
   once the crate-shape open question is settled.
+
+  **Carry-forward from `rainbow-animation`:** the core it extracts is now bigger
+  in one specific way — `ui_state.rs` gained the `Effect`/`EffectKind` model and a
+  free-running `animation_start` clock, and `ui.rs` gained the `Palette` and the
+  three animation curves. All of it is already backend-agnostic: the curves are
+  pure functions of normalized numbers (no `Instant` reaches the renderer), and
+  the clock is `web-time`'s, so the wasm build gets `performance.now()` for free.
+  The one thing to watch is **pacing**: the constants are tuned against the native
+  loop's ~10 fps redraw, and ratzilla drives rendering from
+  `requestAnimationFrame` (~60 fps). The effects will be *smoother* on the web,
+  not broken — but the always-on breath means `draw_web`'s closure never has an
+  idle frame, so the "gate redraws on an effect being active" note in
+  `rainbow-animation.md` matters more there than it does natively.
