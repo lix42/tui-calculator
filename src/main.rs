@@ -241,6 +241,17 @@ fn activate(app: &mut App, ui: &mut UiState, action: Action) {
     ui.clear_status();
     app.apply(action);
     ui.register_press(action.label());
+    // A *successful* evaluation additionally sweeps the palette. `copy_text` is
+    // the existing "is there a result?" question — it is `Some` only in
+    // `Mode::Evaluated`, so a syntax error or an `=` on an empty expression
+    // leaves the colors alone, and the effect can't claim a success that didn't
+    // happen. Read-only, so nothing leaks back into `App`.
+    //
+    // Ordered *after* `register_press`, which clears the previous trigger's
+    // effects: the flash, the ripple and the drift all belong to this one press.
+    if matches!(action, Action::Equals) && app.copy_text().is_some() {
+        ui.register_drift();
+    }
 }
 
 /// Copy the current result to the system clipboard, then show a status message.
@@ -342,7 +353,62 @@ fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ui_state::EffectKind;
     use crossterm::event::KeyEvent;
+
+    /// Whether a hue drift is currently in flight.
+    fn drifting(ui: &UiState) -> bool {
+        ui.effects()
+            .iter()
+            .any(|e| matches!(e.kind(), EffectKind::Drift))
+    }
+
+    #[test]
+    fn drift_fires_only_on_a_successful_evaluation() {
+        // 2+2= evaluates, so the palette sweeps.
+        let (mut app, mut ui) = (App::new(), UiState::new());
+        app.apply_str("2+2");
+        activate(&mut app, &mut ui, Action::Equals);
+        assert!(drifting(&ui), "a successful = should sweep the palette");
+
+        // `=` on an empty expression produces no result, so nothing sweeps —
+        // the effect must not claim a success that didn't happen.
+        let (mut app, mut ui) = (App::new(), UiState::new());
+        activate(&mut app, &mut ui, Action::Equals);
+        assert!(!drifting(&ui));
+
+        // An incomplete expression is an error, not a result.
+        let (mut app, mut ui) = (App::new(), UiState::new());
+        app.apply_str("2+");
+        activate(&mut app, &mut ui, Action::Equals);
+        assert!(!drifting(&ui));
+    }
+
+    #[test]
+    fn a_plain_keypress_flashes_without_drifting() {
+        // Only `=` sweeps; an ordinary digit gets the flash and ripple alone.
+        let (mut app, mut ui) = (App::new(), UiState::new());
+        activate(&mut app, &mut ui, Action::from_label("5").expect("a digit"));
+        assert!(!drifting(&ui));
+        assert!(!ui.effects().is_empty(), "but it does flash");
+    }
+
+    #[test]
+    fn drift_survives_the_press_that_started_it() {
+        // Ordering guard: `register_press` clears the previous trigger's effects,
+        // so registering the drift before it would silently throw the drift away.
+        // All three effects belong to the one `=` press.
+        let (mut app, mut ui) = (App::new(), UiState::new());
+        app.apply_str("6×7");
+        activate(&mut app, &mut ui, Action::Equals);
+        assert!(drifting(&ui));
+        assert!(
+            ui.effects()
+                .iter()
+                .any(|e| matches!(e.kind(), EffectKind::Press { .. })),
+            "the = key should still flash"
+        );
+    }
 
     #[test]
     fn key_to_action_maps_enter_and_backspace() {
