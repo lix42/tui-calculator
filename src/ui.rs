@@ -8,7 +8,7 @@ use ratatui::widgets::{Block, BorderType, Padding, Paragraph};
 use crate::action::quick_key;
 use crate::app::App;
 use crate::layout::{CELL_H, CELL_W, DISPLAY_H};
-use crate::ui_state::{ColorMode, EffectKind, Theme, UiState};
+use crate::ui_state::{ColorMode, EffectKind, FeverStage, Theme, UiState};
 
 /// Everything the color functions need to build a color: which background the
 /// palette is tuned for, and how far the hues are currently rotated by a drift
@@ -191,10 +191,19 @@ pub fn draw(frame: &mut Frame, app: &App, ui: &mut UiState) {
 /// modes genuinely differ on — the ripple and the breath both ride on lightness,
 /// which means the same thing either way.
 fn frame_palette(ui: &UiState) -> Palette {
-    let drift_phase = ui.effects().iter().find_map(|e| match e.kind() {
-        EffectKind::Drift => Some(e.progress()),
-        EffectKind::Press { .. } | EffectKind::Ripple { .. } => None,
-    });
+    // The drift is **rainbow-only** (stage Four): earlier stages have no
+    // digit hues to rotate, so reading the drift from `effects` at a lower
+    // stage would waste the lookup and risk a sneakier bug where the mode
+    // gate below gets inverted. Gating at both ends keeps either half from
+    // regressing in isolation.
+    let drift_phase = if ui.stage().rainbow() {
+        ui.effects().iter().find_map(|e| match e.kind() {
+            EffectKind::Drift => Some(e.progress()),
+            EffectKind::Press { .. } | EffectKind::Ripple { .. } => None,
+        })
+    } else {
+        None
+    };
     palette_for(ui.color_mode(), ui.theme(), drift_phase)
 }
 
@@ -252,12 +261,18 @@ fn centered_panel(area: Rect, width: u16, height: u16) -> Rect {
 }
 
 fn draw_display(frame: &mut Frame, app: &App, ui: &mut UiState, palette: Palette, area: Rect) {
-    // The one always-on effect: the display's frame breathes. It rides on the
-    // border rather than the text so it can never make the expression itself
-    // harder to read, and on lightness rather than hue so it means the same thing
-    // in both color modes.
+    // The display frame breathes — but **only** at fever stages 3+. At stages
+    // 1 and 2 the border uses the terminal default foreground, so a quiet UI
+    // stays genuinely quiet until the user has climbed into animation
+    // territory. The breath rides on lightness (not hue), so when it does run
+    // it means the same thing regardless of color mode.
+    let border_style = if ui.stage().animated() {
+        Style::new().fg(breath_color(ui.breath_phase(), palette.theme))
+    } else {
+        Style::new()
+    };
     let display_block = Block::bordered()
-        .border_style(Style::new().fg(breath_color(ui.breath_phase(), palette.theme)))
+        .border_style(border_style)
         .padding(Padding::horizontal(1));
     let inner = display_block.inner(area);
     frame.render_widget(display_block, area);
@@ -288,6 +303,88 @@ fn draw_display(frame: &mut Frame, app: &App, ui: &mut UiState, palette: Palette
         styled_line(&bottom, mode, palette).right_aligned().bold(),
         bottom_area,
     );
+    // Overlay the fever meter on the just-drawn bottom border. The block has
+    // already painted the bottom row's border characters; we only recolor the
+    // right `fill` of them with the per-stage fever color. Below stage One is
+    // a no-op (score 0, so `fill == 0`).
+    draw_fever_meter(frame, ui, palette, area);
+}
+
+/// Paint the fever meter as a right-to-left fill of the display's bottom
+/// border. Width is `round(score * area.width)` cells; color is per stage.
+///
+/// This is a *post-render overlay*: `Block::bordered` has already drawn the
+/// bottom row's line-drawing characters, and we only recolor specific cells'
+/// `fg`. The corner glyphs (`╰` and `╯`) are included in the fill — the whole
+/// bottom edge reads as one meter rather than a line sandwiched between two
+/// uncolored corners.
+fn draw_fever_meter(frame: &mut Frame, ui: &UiState, palette: Palette, area: Rect) {
+    let score = ui.fever_score();
+    if score <= 0.0 || area.width == 0 || area.height == 0 {
+        return;
+    }
+    let fill = (score * area.width as f64).round() as u16;
+    if fill == 0 {
+        return;
+    }
+    let color = fever_meter_color(ui, palette);
+    let bottom_y = area.y + area.height - 1;
+    let right = area.x + area.width;
+    let buf = frame.buffer_mut();
+    for i in 0..fill {
+        let x = right - 1 - i;
+        buf[(x, bottom_y)].set_fg(color);
+    }
+}
+
+/// The meter's fill color at the current fever stage, built from `palette`.
+///
+/// Each stage's color is deliberately distinct so the meter reads as a stage
+/// indicator as much as a progress bar:
+/// - **One**: a faint neutral, one step away from the resting foreground —
+///   visible as a meter but still clearly "we haven't started yet".
+/// - **Two**: [`loud`], the theme's loudest neutral — matches the loudness of
+///   the mono highlights that just came alive on the buttons.
+/// - **Three**: a single warm hue — the "animation unlocked" signal, hot
+///   enough to be noticed without burning as bright as rainbow mode.
+/// - **Four**: a slowly-rotating hue sampled from the whole palette circle —
+///   the meter never settles, matching the rainbow digits above it.
+fn fever_meter_color(ui: &UiState, palette: Palette) -> Color {
+    match ui.stage() {
+        FeverStage::One => faint_meter(palette.theme),
+        FeverStage::Two => loud(palette.theme),
+        FeverStage::Three => warm_meter(palette.theme),
+        FeverStage::Four => stage_four_meter(ui.fever_meter_hue_phase(), palette.theme),
+    }
+}
+
+/// Stage One meter color: a hueless HSLuv tone one step off the terminal's
+/// resting foreground (brighter on dark, darker on light), so the meter is
+/// barely-noticeable but not invisible. Zero saturation so the two themes
+/// land on grays rather than any colored cast.
+fn faint_meter(theme: Theme) -> Color {
+    let lightness = match theme {
+        Theme::Dark => 90.0,  // just above the ~L 80 resting foreground
+        Theme::Light => 12.0, // just below the ~L 22 resting foreground
+    };
+    Color::from_hsluv(Hsluv::new(0.0, 0.0, lightness))
+}
+
+/// Stage Three meter color: a single warm hue (orange, `H=30`) at the theme's
+/// palette saturation/lightness, so it carries the same "lively but readable"
+/// weight as the colored button highlights at this stage.
+fn warm_meter(theme: Theme) -> Color {
+    let (saturation, lightness) = theme_sl(theme);
+    Color::from_hsluv(Hsluv::new(30.0, saturation, lightness))
+}
+
+/// Stage Four meter color: the hue at `phase` through a full rotation of the
+/// palette (`phase * 360°`), at the theme's palette saturation/lightness. The
+/// phase comes from `UiState::fever_meter_hue_phase` — a free-running clock
+/// cycling every `FEVER_METER_PERIOD`.
+fn stage_four_meter(phase: f32, theme: Theme) -> Color {
+    let (saturation, lightness) = theme_sl(theme);
+    Color::from_hsluv(Hsluv::new(phase * 360.0, saturation, lightness))
 }
 
 /// The display border's color at `phase` through a breath cycle.
@@ -386,18 +483,28 @@ fn draw_buttons(frame: &mut Frame, ui: &mut UiState, palette: Palette, area: Rec
     .split(area);
 
     let mode = ui.color_mode();
+    let stage = ui.stage();
     // Tips are drawn only while quick-mode is on, which makes them the mode
     // indicator as well as the key legend: the mode is never silently active.
     let quick = ui.quick_mode();
-    // The ripple in flight, resolved once per frame to (origin button, phase)
-    // rather than per button — the origin cell is the same for every cell we're
-    // about to measure against it.
-    let ripple = ui.effects().iter().find_map(|e| match e.kind() {
-        EffectKind::Ripple { cell } => Some((keypad.button_index_at(cell.0, cell.1), e.progress())),
-        // The drift is global — it recolors the palette rather than radiating
-        // from a cell, so it is resolved in `frame_palette`, not here.
-        EffectKind::Press { .. } | EffectKind::Drift => None,
-    });
+    // The ripple is gated by fever stage — it only radiates at stages 3-4. At
+    // stages 1-2 we skip reading `effects` for a ripple at all, so `view.ripple`
+    // falls to 0.0 and `apply_ripple` short-circuits below its floor.
+    // Resolved once per frame to (origin button, phase) rather than per
+    // button — the origin cell is the same for every cell we measure against it.
+    let ripple = if stage.animated() {
+        ui.effects().iter().find_map(|e| match e.kind() {
+            EffectKind::Ripple { cell } => {
+                Some((keypad.button_index_at(cell.0, cell.1), e.progress()))
+            }
+            // The drift is global — it recolors the palette rather than
+            // radiating from a cell, so it is resolved in `frame_palette`, not
+            // here.
+            EffectKind::Press { .. } | EffectKind::Drift => None,
+        })
+    } else {
+        None
+    };
     let mut rects = vec![Rect::ZERO; keypad.button_count()];
     for (i, b) in keypad.buttons().iter().enumerate() {
         let left = col_x[b.col as usize];
@@ -421,6 +528,7 @@ fn draw_buttons(frame: &mut Frame, ui: &mut UiState, palette: Palette, area: Rec
                     ripple_intensity(keypad.button_distance(origin, i), phase)
                 }),
             },
+            stage,
             mode,
             palette,
             rect,
@@ -448,8 +556,22 @@ struct ButtonView<'a> {
     ripple: f32,
 }
 
-fn draw_button(frame: &mut Frame, view: ButtonView, mode: ColorMode, palette: Palette, area: Rect) {
-    let base = button_style(view.label, view.focused, view.pressed, mode, palette);
+fn draw_button(
+    frame: &mut Frame,
+    view: ButtonView,
+    stage: FeverStage,
+    mode: ColorMode,
+    palette: Palette,
+    area: Rect,
+) {
+    // Stage One is "plain-plain": no palette color, focus/press shown by
+    // border weight and REVERSED video. Every higher stage dispatches into
+    // `button_style`, which handles the mono vs. rainbow split.
+    let base = if stage.colored_highlights() {
+        button_style(view.label, view.focused, view.pressed, mode, palette)
+    } else {
+        plain_style(view.focused, view.pressed)
+    };
     let active = view.focused || view.pressed;
     let style = apply_ripple(base, active, view.ripple, view.label, mode, palette);
     let mut block = Block::bordered()
@@ -496,6 +618,38 @@ static REGULAR_STYLE: ButtonStyle = ButtonStyle {
     border_style: Style::new(),
     border_type: BorderType::Rounded,
 };
+
+/// The [`ButtonStyle`] for stage One (`FeverStage::One` — the user hasn't
+/// typed enough to earn any color yet). Everything is drawn without pulling a
+/// hue from the palette; focus and press are shown by *shape* alone.
+///
+/// - **Resting**: unchanged from [`REGULAR_STYLE`].
+/// - **Focused**: the rounded border becomes [`BorderType::Thick`] — a
+///   heavier frame, no color — so a scanner can still see which cell is
+///   active without an accent chip.
+/// - **Pressed**: a REVERSED block (and glyph), which flashes the whole cell
+///   against the terminal's default foreground/background. The border also
+///   thickens. REVERSED needs no explicit color on either side — it just asks
+///   the terminal to swap fg and bg for that cell — so it stays uncolored
+///   even on a Light theme (where a hardcoded White fill would knock out
+///   same-on-same, the trap `loud`/`knockout` document for the colored stages).
+fn plain_style(focused: bool, pressed: bool) -> ButtonStyle {
+    if pressed {
+        return ButtonStyle {
+            block_style: Style::new().reversed(),
+            text_style: Style::new().reversed(),
+            border_style: Style::new().reversed(),
+            border_type: BorderType::Thick,
+        };
+    }
+    if focused {
+        return ButtonStyle {
+            border_type: BorderType::Thick,
+            ..REGULAR_STYLE
+        };
+    }
+    REGULAR_STYLE
+}
 
 /// The [`ButtonStyle`] a button is actually drawn with. Both modes derive every
 /// highlight from the palette — there is no static accent color left.
@@ -767,6 +921,7 @@ mod tests {
     use crate::layout::Keypad;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
+    use ratatui::style::Modifier;
     use std::collections::HashSet;
 
     /// Render the whole UI onto a `28×29` test terminal — exactly the standard
@@ -1467,6 +1622,197 @@ mod tests {
             .block_style
             .bg,
             Some(Color::DarkGray)
+        );
+    }
+
+    // --- Fever rendering ------------------------------------------------------
+
+    /// Climb the fever meter to a target stage by firing presses. Avoids
+    /// reaching into private fields; panics if the meter saturates before the
+    /// target is reached (which would mean a hysteresis bug).
+    fn climb_to(ui: &mut UiState, target: FeverStage) {
+        for _ in 0..20 {
+            if ui.stage() == target {
+                return;
+            }
+            ui.register_press_fever();
+        }
+        panic!(
+            "20 presses didn't reach {target:?} (ended at {:?}, score {})",
+            ui.stage(),
+            ui.fever_score()
+        );
+    }
+
+    /// Whether a cell is drawn in the terminal default. Ratatui normalizes
+    /// an "unstyled" cell's fg to either `None` or `Some(Color::Reset)`
+    /// depending on which widget touched it; both read as "no color" to a
+    /// user, so the two are equivalent for a visibility assertion.
+    fn is_default_fg(cell: &ratatui::buffer::Cell) -> bool {
+        matches!(cell.style().fg, None | Some(Color::Reset))
+    }
+
+    #[test]
+    fn fever_meter_is_invisible_at_startup() {
+        // Fresh UiState sits at stage One with score 0. The display's bottom
+        // border is rendered by `Block::bordered` with no fg (plain
+        // `Style::new()`, since the breath is also gated off at stages 1-2),
+        // and the meter overlay adds nothing on top. So every bottom-border
+        // cell renders as the terminal default.
+        let mut ui = UiState::new();
+        let buf = render(&mut ui);
+        let bottom_y = DISPLAY_H - 1;
+        for x in 0..buf.area.width {
+            assert!(
+                is_default_fg(&buf[(x, bottom_y)]),
+                "cell ({x}, {bottom_y}) must be unstyled at stage One; got {:?}",
+                buf[(x, bottom_y)].style().fg
+            );
+        }
+    }
+
+    #[test]
+    fn fever_meter_fills_the_bottom_border_right_to_left_at_stage_two() {
+        // Two presses yield a score ≈ 0.30, which puts the meter in stage Two
+        // (upper hysteresis edge at 0.27). On the 28-wide standard panel that
+        // is `round(0.30 * 28) ≈ 8` filled cells on the *right*, each carrying
+        // the stage-Two color. The left cells remain default (no fg).
+        let mut ui = UiState::new();
+        ui.register_press_fever();
+        ui.register_press_fever();
+        assert_eq!(ui.stage(), FeverStage::Two);
+        let want_color = fever_meter_color(&ui, Palette::new(Theme::Dark));
+        let buf = render(&mut ui);
+        let bottom_y = DISPLAY_H - 1;
+        let width = buf.area.width;
+        let fill = (ui.fever_score() * width as f64).round() as u16;
+        assert!(fill > 0 && fill < width, "fill {fill} out of (0, {width})");
+        // Right-end cells carry the meter color.
+        for i in 0..fill {
+            let x = width - 1 - i;
+            assert_eq!(
+                buf[(x, bottom_y)].style().fg,
+                Some(want_color),
+                "right-end cell ({x}, {bottom_y}) must carry stage-Two color"
+            );
+        }
+        // Left-end cells stay unstyled (still default fg, no meter).
+        for x in 0..(width - fill) {
+            assert!(
+                is_default_fg(&buf[(x, bottom_y)]),
+                "left-end cell ({x}, {bottom_y}) must stay default outside the fill; got {:?}",
+                buf[(x, bottom_y)].style().fg
+            );
+        }
+    }
+
+    #[test]
+    fn fever_meter_fills_whole_bottom_border_at_stage_four() {
+        // Seven presses pin the score at 1.0; the meter should cover every
+        // cell of the bottom border with the stage-Four hue.
+        let mut ui = UiState::new();
+        for _ in 0..7 {
+            ui.register_press_fever();
+        }
+        assert_eq!(ui.stage(), FeverStage::Four);
+        let want_color = fever_meter_color(&ui, Palette::new(Theme::Dark));
+        let buf = render(&mut ui);
+        let bottom_y = DISPLAY_H - 1;
+        for x in 0..buf.area.width {
+            assert_eq!(
+                buf[(x, bottom_y)].style().fg,
+                Some(want_color),
+                "cell ({x}, {bottom_y}) must carry the stage-Four meter color"
+            );
+        }
+    }
+
+    #[test]
+    fn fever_meter_color_is_distinct_per_stage() {
+        // The four stages must be tellable apart on the meter — if any two
+        // resolved to the same color, the meter would stop reading as a stage
+        // indicator at that transition. Resolved against the same palette so
+        // the test isn't picking up theme differences.
+        let mut colors = Vec::new();
+        for stage in [
+            FeverStage::One,
+            FeverStage::Two,
+            FeverStage::Three,
+            FeverStage::Four,
+        ] {
+            let mut ui = UiState::new();
+            // Reach the target stage via presses; climb_to below. For stage One
+            // (the default) just leave `ui` alone.
+            if stage != FeverStage::One {
+                climb_to(&mut ui, stage);
+            }
+            colors.push(fever_meter_color(&ui, Palette::new(Theme::Dark)));
+        }
+        let unique: std::collections::HashSet<_> = colors.iter().cloned().collect();
+        assert_eq!(
+            unique.len(),
+            4,
+            "stage colors must all differ, got {colors:?}"
+        );
+    }
+
+    #[test]
+    fn plain_style_uses_no_palette_color() {
+        // Stage One pins every button to `plain_style`: no explicit `fg` on
+        // text, block, or border. The only visible cues are the border weight
+        // on focus and REVERSED on press — both color-free so a terminal with
+        // any theme reads the same way.
+        let rest = plain_style(false, false);
+        assert_eq!(rest.text_style.fg, None);
+        assert_eq!(rest.block_style.fg, None);
+        assert_eq!(rest.block_style.bg, None);
+        assert_eq!(rest.border_style.fg, None);
+        assert_eq!(rest.border_type, BorderType::Rounded);
+
+        let focused = plain_style(true, false);
+        assert_eq!(focused.text_style.fg, None); // no color on focus either
+        assert_eq!(focused.block_style.bg, None);
+        assert_eq!(focused.border_type, BorderType::Thick); // but the border thickens
+
+        let pressed = plain_style(true, true);
+        // Pressed uses REVERSED everywhere so the terminal swaps its own fg/bg
+        // for a visible flash — no explicit color is set.
+        assert!(
+            pressed
+                .block_style
+                .add_modifier
+                .contains(Modifier::REVERSED)
+        );
+        assert_eq!(pressed.block_style.fg, None);
+        assert_eq!(pressed.block_style.bg, None);
+        assert_eq!(pressed.border_type, BorderType::Thick);
+    }
+
+    #[test]
+    fn breath_is_off_below_stage_three() {
+        // Breath rides on the display border's fg. At stage One (the launch
+        // default) the border gets the terminal default — no fg, no cycling
+        // lightness. Climbing to stage Three turns it on.
+        let mut ui = UiState::new();
+        let buf = render(&mut ui);
+        // The display's top border runs across row 0. Pick a mid-column cell
+        // that's a straight line character (not a corner): x=5 is well inside
+        // the top edge.
+        assert!(
+            is_default_fg(&buf[(5, 0)]),
+            "border must be plain at stage One; got {:?}",
+            buf[(5, 0)].style().fg
+        );
+        // Climb to stage Three (three presses: 0.45; one more pushes to 0.60).
+        for _ in 0..4 {
+            ui.register_press_fever();
+        }
+        assert_eq!(ui.stage(), FeverStage::Three);
+        let buf = render(&mut ui);
+        assert!(
+            !is_default_fg(&buf[(5, 0)]),
+            "border must carry breath color at stage Three; got {:?}",
+            buf[(5, 0)].style().fg
         );
     }
 

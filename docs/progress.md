@@ -887,12 +887,111 @@ one-line change is to `retain` the global `Drift` in `start_effects`.
   live ripples and append up to a cap.
 - No user-facing keys changed, so `README.md` needed no update.
 
+## fever-mode — `src/ui_state.rs`, `src/ui.rs`, `src/main.rs`
+
+Turns the user's typing pace into a visual reward: a `0..=1` meter climbs on
+each press (`+0.15`), decays when idle (`-0.05/s`), and a successful `=` pauses
+decay for 2.5 s so reading the result doesn't cost altitude. Four stages
+(`FeverStage::One..Four`) snap at `0.25/0.50/0.75` thresholds with `±0.02`
+hysteresis, each enabling more of the UI: `One` is plain (no palette color, no
+animation), `Two` turns colored mono highlights on, `Three` adds ripple +
+display breath, `Four` is full rainbow + hue drift. The meter *is* the display
+box's bottom border — fill grows right-to-left, with per-stage color (faint →
+`loud` → warm hue → slowly-rotating hue).
+
+**Replaces `r`.** The `r`/`R` toggle for `ColorMode` is gone; `color_mode()` is
+now derived from stage, and `ColorMode` the enum stays as the renderer's
+internal view only. `t` (theme) stays as a user preference, orthogonal to fever.
+
+### What landed where
+
+- **`ui_state.rs`** — `FeverStage` enum with three predicate methods
+  (`colored_highlights`, `animated`, `rainbow`), four new fields on `UiState`
+  (`fever_score`, `fever_stage`, `fever_last_tick`, `reading_grace_until`),
+  three pure helpers (`score_after_decay`, `decayed_with_grace`, `next_stage`),
+  and the lazy-decay machinery (`apply_decay` private + `register_press_fever`
+  + `register_grace`). `tick()` catches up outstanding decay before every draw.
+  `fever_meter_hue_phase()` is the stage-Four meter's free-running 20 s clock,
+  parallel to `breath_phase()`.
+- **`main.rs`** — `activate` fires `register_press_fever` after
+  `register_press`; a successful `=` fires `register_drift` *and*
+  `register_grace`. The `r`/`R` branch is deleted. A new test asserts `r` is
+  now inert.
+- **`ui.rs`** — `draw_display` gates the breath on `stage.animated()` and
+  overlays the fever meter on the bottom border (`draw_fever_meter`,
+  `fever_meter_color`, `faint_meter`, `warm_meter`, `stage_four_meter`).
+  `draw_buttons` gates ripple extraction on `stage.animated()` so stages 1-2
+  short-circuit before touching `effects`. `draw_button` dispatches to a new
+  `plain_style` at stage 1 (BorderType::Thick on focus, REVERSED on press, no
+  palette color anywhere). `frame_palette` gates the drift on `stage.rainbow()`
+  as well as the existing `ColorMode == Rainbow` check — defense in depth.
+
+### Decisions worth preserving
+
+- **Press flash stays always on.** It is input confirmation, not decoration —
+  gating it would make a terminal with any input lag unusable at low stages.
+  The `plain_style` press branch uses `Modifier::REVERSED` (no explicit color,
+  so the Light theme is covered for free; `loud`/`knockout` would have been a
+  trap here).
+- **Effects fire unconditionally, render conditionally.** `register_press`
+  still inserts both `Press` and `Ripple` into `effects` at every stage;
+  `register_drift` still inserts `Drift` on every successful `=`. The data
+  model stays untouched — only the renderer branches on stage. This keeps
+  tests that assert on `effects()` membership green (e.g.
+  `drift_fires_only_on_a_successful_evaluation`) and lets a late stage climb
+  pick up effects already in flight.
+- **No stage-up celebration flash.** The meter's color/length change *is* the
+  signal. If a one-off tell proves wanted, it's a cheap retrofit: one
+  `start_effects` call with a `Ripple { cell: meter_cell }`.
+- **"Visible meter" without an extra widget.** The display box already has a
+  bottom border; `draw_fever_meter` is a *post-render overlay* that only
+  recolors specific cells' `fg` via `frame.buffer_mut()[(x, y)].set_fg(...)`.
+  Zero extra layout space, and the `╰───╯` characters already drawn carry the
+  meter.
+- **Lazy decay, not a timer.** The meter is advanced only when `tick` runs or
+  `register_press_fever` is called — never from a background thread. The run
+  loop's 100 ms repaint cadence paces decay naturally, and the pure helpers
+  mean every tune-knob is unit-testable without a sleep.
+
+### Test coverage
+
+- Pure math: `score_after_decay` (rate + zero floor), `decayed_with_grace`
+  (whole-interval pause + partial pause + no-grace equivalence to plain
+  decay), `next_stage` (climbs at upper edge, falls at lower edge, holds in
+  deadband).
+- State: startup is `(One, 0.0, Mono)`; `register_press_fever` climbs by
+  `FEVER_CLIMB`; 7 presses reach `Four`; `register_grace` + manual
+  `apply_decay(now)` freezes the score and then decays only the post-grace
+  portion. Grace boundary pinned to `fever_last_tick + FEVER_GRACE` directly
+  to sidestep the `Instant::now()` micro-slip between `new()` and the call.
+- Rendering: TestBackend at 28×29 confirms the meter is invisible at startup,
+  fills the right-half-ish at stage Two, fully fills at stage Four, every
+  stage's meter color is distinct, `plain_style` sets no palette color at
+  stage One, and the display border carries no breath fg below stage Three.
+- Integration: `r_key_is_inert_after_fever_took_over` guards the removal.
+  `drift_is_rainbow_only_but_the_theme_still_applies` reaches mono through
+  the fresh-UiState default (stage One) rather than the deleted toggle.
+
+### Carry-forwards
+
+- **README has new content, not just a column drop.** The keys table loses
+  `r` and gains a whole Fever section with the four-stage table and the rate
+  math. The feature bullet changed from "per-digit rainbow coloring" to
+  "fever mode". This is exactly the pattern CLAUDE.md warns about — README
+  drift is cheap to introduce, so the whole feature-set description must
+  land with every keymap change.
+- **The three colored stage knobs** (`faint_meter` lightness, `warm_meter`
+  hue, `FEVER_METER_PERIOD`) are tunable by eye. Current values (90/12,
+  `H=30`, 20 s) were picked without playtest; expect at least one tweak.
+- **`+0.15/press` is deliberately generous.** 10 presses in 15 s net `+0.75`
+  — one burst from zero reaches the stage-Three threshold. If the ladder
+  feels too easy once in use, cut to `+0.10` (which was the earlier spec
+  before Lix bumped it) or `+0.075` (10-presses-in-15s = one stage exactly).
+
 ## Next Task
 
-Every feature task is now done — the layout arc (`layout-config` →
-`layout-registry` → `layout-auto`), `focus-per-button`, `rainbow-mode` (static
-pass), `quick-input`, and `rainbow-animation` (2026-09-20). **`web-ratzilla` is
-the only task left.**
+With fever-mode shipped, the layout arc + rainbow pass + fever pass are all
+behind us. **`web-ratzilla` is the only remaining task.**
 
 - **`web-ratzilla`** — Ratzilla WASM build + Cloudflare Pages deploy. Known gaps:
   event-loop inversion → a `Msg` enum (see the deferred note above — this is the

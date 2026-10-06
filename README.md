@@ -10,7 +10,8 @@ A terminal-based calculator built with Rust and [Ratatui](https://ratatui.rs).
 - Mouse click support, and paste a whole expression at once
 - Button grid UI similar to macOS Calculator, in three shapes that adapt to the
   terminal's proportions
-- Per-digit rainbow coloring, with dark and light palettes
+- **Fever mode**: typing drives a visual ladder — plain → colored highlights →
+  animation → full rainbow, with the meter living in the display's bottom border
 - **Quick input**: a home-row numpad mode for typing without leaving the home row
 - **Copy result to clipboard**: after evaluating, a `[y Copy]` hint appears in the
   display. Press `y` or click it to copy the result. It disappears when new input
@@ -48,12 +49,32 @@ otherwise inert, so that double-tapping it can never discard an expression.
 | `y`   | Copy the result to the clipboard (only after evaluating)      |
 | `Tab` | Switch to the next keypad, pinning it against resizes         |
 | `a`   | Un-pin and resume automatic shape-based keypad selection      |
-| `r`   | Toggle per-digit rainbow coloring                             |
 | `t`   | Toggle the dark/light palette                                 |
 
 Three keypads ship — a 5×4 standard pad, a tall-narrow one, and a wide-short one.
 Resizing the terminal picks whichever best fits its shape, unless `Tab` has pinned
 one.
+
+### Fever mode
+
+Typing drives a four-stage visual ladder. The meter *is* the display box's bottom
+border — it fills right-to-left as you type and drains when you stop.
+
+| Stage | Reached at score | Looks like                                              |
+|------:|:-----------------|:--------------------------------------------------------|
+|   1   | 0 (startup)      | Plain. No palette color, no decorative animation.       |
+|   2   | 0.25             | Mono highlights come alive on focus and press.          |
+|   3   | 0.50             | Press ripple + display breath animations unlock.        |
+|   4   | 0.75             | Full per-digit rainbow + the hue drift on successful `=`. |
+
+- **Climb:** `+0.15` per press.
+- **Decay:** `-0.05`/second of idle time. A full meter empties in 20 seconds flat.
+- **Reading grace:** after a successful `=`, decay freezes for 2.5 seconds — a
+  short pause to look at the result doesn't cost altitude.
+- **Hysteresis:** `±0.02` around each stage threshold, so a score hovering at a
+  boundary doesn't flap between stages.
+
+There is no manual rainbow toggle. The way to see rainbow is to type.
 
 ### Quick input
 

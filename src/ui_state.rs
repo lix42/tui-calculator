@@ -46,6 +46,14 @@ const RIPPLE_DURATION: Duration = Duration::from_millis(800);
 /// it only when looking for it.
 const BREATH_PERIOD: Duration = Duration::from_millis(4200);
 
+/// How long one cycle of the stage-four fever meter's hue rotation takes.
+///
+/// Slower than [`BREATH_PERIOD`] because the breath is a tiny lightness nudge
+/// while this is a full 360° hue rotation — a 4 s hue cycle would turn the
+/// meter into a strobe. 20 s is slow enough to read as "always alive" without
+/// drawing the eye away from the expression itself.
+const FEVER_METER_PERIOD: Duration = Duration::from_secs(20);
+
 /// How long the hue drift takes to sweep the palette and settle back.
 ///
 /// Longer than the ripple: the ripple acknowledges a keystroke, while this marks
@@ -695,6 +703,15 @@ impl UiState {
     /// re-inserting it forever.
     pub fn breath_phase(&self) -> f32 {
         let period = BREATH_PERIOD.as_secs_f32();
+        (self.animation_start.elapsed().as_secs_f32() / period).fract()
+    }
+
+    /// A free-running `0.0..1.0` phase for the stage-four fever meter's hue
+    /// rotation, cycling every [`FEVER_METER_PERIOD`]. Only meaningful at
+    /// stage four — the renderer gates on `stage().rainbow()` before reading
+    /// it.
+    pub fn fever_meter_hue_phase(&self) -> f32 {
+        let period = FEVER_METER_PERIOD.as_secs_f32();
         (self.animation_start.elapsed().as_secs_f32() / period).fract()
     }
 
