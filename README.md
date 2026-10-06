@@ -57,25 +57,32 @@ one.
 
 ### Fever mode
 
-Typing drives a four-stage visual ladder. The meter *is* the display box's bottom
-border — it fills right-to-left as you type and drains when you stop. The score
-runs on a `0..4` scale, one unit per stage.
+Typing drives a four-stage visual ladder. The meter *is* the display box's
+bottom border — each stage drives it 0 → 100 % of width in that stage's color,
+then resets with a new color overlaying on top. The score runs on a `0..4`
+scale, one unit per stage.
 
-| Stage | Reached at score | Looks like                                              |
-|------:|:-----------------|:--------------------------------------------------------|
-|   1   | 0 (startup)      | Plain. No palette color, no decorative animation.       |
-|   2   | 1.0              | Mono highlights come alive on focus and press.          |
-|   3   | 2.0              | Press ripple + display breath animations unlock.        |
-|   4   | 3.0              | Full per-digit rainbow + the hue drift on successful `=`. |
+| Stage | Score    | Buttons / display                                           | Meter        |
+|------:|:---------|:------------------------------------------------------------|:-------------|
+|   1   | 0 → 1    | Plain. No palette color, no decorative animation.           | Dim gray     |
+|   2   | 1 → 2    | Mono highlights come alive on focus and press.              | Medium gray  |
+|   3   | 2 → 3    | Press ripple + display breath animations unlock.            | Bright gray  |
+|   4   | 3 → 4    | Full per-digit rainbow + the hue drift on successful `=`.   | Drifting hue |
 
-- **Climb:** `+0.15` per press (one press = 15 % of a stage, so climbing a stage
-  from zero takes about 7 presses net of decay).
+At score `0` the bottom border is simply not drawn — the display's bottom
+edge is only visible once the meter has started filling. Once a stage
+completes, its color stays on the left while the next stage's color fills
+from the right; a `<` marker sits at the layer boundary so you can see where
+the current fill head is without having to tell two grays apart by eye.
+
+- **Climb:** `+0.15` per press (one press = 15 % of a stage, so climbing a
+  stage from zero takes about 7 presses net of decay).
 - **Decay:** `-0.05`/second of idle time. One stage drains in 20 seconds, the
   full ladder in 80.
-- **Reading grace:** after a successful `=`, decay freezes for 2.5 seconds — a
-  short pause to look at the result doesn't cost altitude.
-- **Hysteresis:** `±0.08` around each stage threshold, so a score hovering at a
-  boundary doesn't flap between stages.
+- **Reading grace:** after a successful `=`, decay freezes for 2.5 seconds —
+  a short pause to look at the result doesn't cost altitude.
+- **Hysteresis:** `±0.08` around each stage threshold, so a score hovering at
+  a boundary doesn't flap between stages.
 
 There is no manual rainbow toggle. The way to see rainbow is to type.
 

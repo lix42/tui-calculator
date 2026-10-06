@@ -310,75 +310,133 @@ fn draw_display(frame: &mut Frame, app: &App, ui: &mut UiState, palette: Palette
     draw_fever_meter(frame, ui, palette, area);
 }
 
-/// Paint the fever meter as a right-to-left fill of the display's bottom
-/// border. Width is `round(score * area.width)` cells; color is per stage.
+/// Paint the fever meter on the display's bottom border as a **per-stage**
+/// fill: the current stage's color grows right-to-left as its 0..1 fraction
+/// fills, with the *previous* stage's color visible on the left as a base
+/// layer. Each stage completion lays down a new track; at score `n.0` the
+/// bar is one solid stage-`n` color, then stage `n+1` starts eating into it
+/// from the right.
 ///
-/// This is a *post-render overlay*: `Block::bordered` has already drawn the
-/// bottom row's line-drawing characters, and we only recolor specific cells'
-/// `fg`. The corner glyphs (`╰` and `╯`) are included in the fill — the whole
-/// bottom edge reads as one meter rather than a line sandwiched between two
-/// uncolored corners.
+/// Three regions, drawn right-to-left:
+/// - **current fill** (`current_fill` cells on the right): current stage's
+///   color overlaying the border characters.
+/// - **marker cell** (one cell at the left edge of the current fill, when
+///   both regions have width): a `<` glyph in the current stage's color, so
+///   the eye can find the fill head even when two adjacent grays look
+///   similar.
+/// - **base layer** (the remaining cells on the left): either the previous
+///   stage's color (stages 2-4) or *erased* with a space character (stage 1,
+///   where "below" is nothing — no bottom border visible until the meter
+///   starts filling).
 fn draw_fever_meter(frame: &mut Frame, ui: &UiState, palette: Palette, area: Rect) {
-    // `fever_fill_fraction` is the renderer's view of the score — `0.0..=1.0`
-    // regardless of the internal scale `ui_state` keeps it on. If any of
-    // these pre-conditions fail there is simply nothing to paint.
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+    let total = area.width;
     let fraction = ui.fever_fill_fraction();
-    if fraction <= 0.0 || area.width == 0 || area.height == 0 {
-        return;
-    }
-    let fill = (fraction * area.width as f64).round() as u16;
-    if fill == 0 {
-        return;
-    }
-    let color = fever_meter_color(ui, palette);
+    let current_fill = (fraction * total as f64).round().clamp(0.0, total as f64) as u16;
+    let base_width = total - current_fill;
     let bottom_y = area.y + area.height - 1;
     let right = area.x + area.width;
+    let current_color = fever_meter_color(ui, palette);
+    let base = base_meter_color(ui.stage(), palette, ui);
     let buf = frame.buffer_mut();
-    for i in 0..fill {
+
+    // Base region (left of the current fill). Stage One has no previous
+    // layer — erase the border characters so the display's bottom edge truly
+    // disappears where the meter hasn't reached. Stages 2-4 paint the
+    // previous stage's color on top of the already-drawn border.
+    for x in area.x..(area.x + base_width) {
+        match base {
+            Some(color) => {
+                buf[(x, bottom_y)].set_fg(color);
+            }
+            None => {
+                buf[(x, bottom_y)].set_symbol(" ").set_fg(Color::Reset);
+            }
+        }
+    }
+
+    // Current region (right of the base). All these cells take the current
+    // stage's color.
+    for i in 0..current_fill {
         let x = right - 1 - i;
-        buf[(x, bottom_y)].set_fg(color);
+        buf[(x, bottom_y)].set_fg(current_color);
+    }
+
+    // Marker at the layer boundary, when both regions are non-empty — i.e.
+    // only when there's an interior boundary to point at. Drawn in the
+    // current stage's color so it reads as "this is the current head".
+    if current_fill > 0 && base_width > 0 {
+        let marker_x = right - current_fill;
+        buf[(marker_x, bottom_y)]
+            .set_symbol("<")
+            .set_fg(current_color);
     }
 }
 
-/// The meter's fill color at the current fever stage, built from `palette`.
+/// The color for the fever meter's **current** stage layer.
 ///
-/// Each stage's color is deliberately distinct so the meter reads as a stage
-/// indicator as much as a progress bar:
-/// - **One**: a faint neutral, one step away from the resting foreground —
-///   visible as a meter but still clearly "we haven't started yet".
-/// - **Two**: [`loud`], the theme's loudest neutral — matches the loudness of
-///   the mono highlights that just came alive on the buttons.
-/// - **Three**: a single warm hue — the "animation unlocked" signal, hot
-///   enough to be noticed without burning as bright as rainbow mode.
-/// - **Four**: a slowly-rotating hue sampled from the whole palette circle —
-///   the meter never settles, matching the rainbow digits above it.
+/// Stages One, Two, and Three are three grays at progressively higher
+/// lightness distance from the terminal background (dim → medium → bright on
+/// Dark; light → medium → dark on Light). Grays, not hues, so stage Three
+/// never fights the drifting rainbow at stage Four for color space — stage
+/// Four is the one place a hue appears, which makes it feel *earned*.
+///
+/// Three similar grays are hard to tell apart on their own; the `<` marker
+/// in `draw_fever_meter` carries the "where is the current fill head"
+/// information that color alone cannot.
 fn fever_meter_color(ui: &UiState, palette: Palette) -> Color {
-    match ui.stage() {
-        FeverStage::One => faint_meter(palette.theme),
-        FeverStage::Two => loud(palette.theme),
-        FeverStage::Three => warm_meter(palette.theme),
+    stage_meter_color(ui.stage(), palette, ui)
+}
+
+/// The color for the fever meter's **previous** stage layer — the base that
+/// shows on the left of the current fill. `None` for stage One (nothing
+/// below): the renderer erases those cells instead of painting them, so the
+/// display's bottom border is invisible until the meter has climbed into it.
+fn base_meter_color(current: FeverStage, palette: Palette, ui: &UiState) -> Option<Color> {
+    let prev = match current {
+        FeverStage::One => return None,
+        FeverStage::Two => FeverStage::One,
+        FeverStage::Three => FeverStage::Two,
+        FeverStage::Four => FeverStage::Three,
+    };
+    Some(stage_meter_color(prev, palette, ui))
+}
+
+/// The color each stage's layer is drawn in, factored out so `fever_meter_color`
+/// (current) and `base_meter_color` (previous) stay one-liners that disagree
+/// on nothing.
+fn stage_meter_color(stage: FeverStage, palette: Palette, ui: &UiState) -> Color {
+    match stage {
+        FeverStage::One => meter_gray(palette.theme, GrayLevel::Dim),
+        FeverStage::Two => meter_gray(palette.theme, GrayLevel::Medium),
+        FeverStage::Three => meter_gray(palette.theme, GrayLevel::Bright),
         FeverStage::Four => stage_four_meter(ui.fever_meter_hue_phase(), palette.theme),
     }
 }
 
-/// Stage One meter color: a hueless HSLuv tone one step off the terminal's
-/// resting foreground (brighter on dark, darker on light), so the meter is
-/// barely-noticeable but not invisible. Zero saturation so the two themes
-/// land on grays rather than any colored cast.
-fn faint_meter(theme: Theme) -> Color {
-    let lightness = match theme {
-        Theme::Dark => 90.0,  // just above the ~L 80 resting foreground
-        Theme::Light => 12.0, // just below the ~L 22 resting foreground
-    };
-    Color::from_hsluv(Hsluv::new(0.0, 0.0, lightness))
+/// The three gray tiers the stages 1-3 meter uses. Each tier moves one step
+/// further from the terminal's background per theme — brighter on Dark,
+/// darker on Light — same convention as `loud` / `knockout` / `ripple` /
+/// `breath`. Zero HSLuv saturation so the themes land cleanly on grays.
+#[derive(Clone, Copy)]
+enum GrayLevel {
+    Dim,    // stage 1
+    Medium, // stage 2
+    Bright, // stage 3
 }
 
-/// Stage Three meter color: a single warm hue (orange, `H=30`) at the theme's
-/// palette saturation/lightness, so it carries the same "lively but readable"
-/// weight as the colored button highlights at this stage.
-fn warm_meter(theme: Theme) -> Color {
-    let (saturation, lightness) = theme_sl(theme);
-    Color::from_hsluv(Hsluv::new(30.0, saturation, lightness))
+fn meter_gray(theme: Theme, level: GrayLevel) -> Color {
+    let lightness = match (theme, level) {
+        (Theme::Dark, GrayLevel::Dim) => 50.0,
+        (Theme::Dark, GrayLevel::Medium) => 70.0,
+        (Theme::Dark, GrayLevel::Bright) => 92.0,
+        (Theme::Light, GrayLevel::Dim) => 55.0,
+        (Theme::Light, GrayLevel::Medium) => 32.0,
+        (Theme::Light, GrayLevel::Bright) => 10.0,
+    };
+    Color::from_hsluv(Hsluv::new(0.0, 0.0, lightness))
 }
 
 /// Stage Four meter color: the hue at `phase` through a full rotation of the
@@ -1660,56 +1718,99 @@ mod tests {
 
     #[test]
     fn fever_meter_is_invisible_at_startup() {
-        // Fresh UiState sits at stage One with score 0. The display's bottom
-        // border is rendered by `Block::bordered` with no fg (plain
-        // `Style::new()`, since the breath is also gated off at stages 1-2),
-        // and the meter overlay adds nothing on top. So every bottom-border
-        // cell renders as the terminal default.
+        // Fresh UiState sits at stage One with score 0, so `fever_fill_fraction`
+        // is 0 and the meter's "base" region covers the whole bottom row.
+        // Stage One has no previous-stage layer below it, so the renderer
+        // *erases* the border characters there — every bottom-border cell is
+        // a space with the default foreground, and the display's bottom edge
+        // is literally not drawn. "No line at the bottom" at the empty state.
         let mut ui = UiState::new();
         let buf = render(&mut ui);
         let bottom_y = DISPLAY_H - 1;
         for x in 0..buf.area.width {
+            let cell = &buf[(x, bottom_y)];
+            assert_eq!(
+                cell.symbol(),
+                " ",
+                "cell ({x}, {bottom_y}) must be erased at stage One/score 0"
+            );
             assert!(
-                is_default_fg(&buf[(x, bottom_y)]),
-                "cell ({x}, {bottom_y}) must be unstyled at stage One; got {:?}",
-                buf[(x, bottom_y)].style().fg
+                is_default_fg(cell),
+                "cell ({x}, {bottom_y}) must have default fg; got {:?}",
+                cell.style().fg
             );
         }
     }
 
     #[test]
-    fn fever_meter_fills_the_bottom_border_right_to_left_at_stage_two() {
-        // Climb to stage Two via the public API, then verify the right-end
-        // cells of the display's bottom border carry the stage-Two color and
-        // the left-end cells stay default. The exact fill count depends on
-        // where in stage Two the ladder lands — any count in (0, width) is
-        // acceptable, since the meter's job is "something on the right, not
-        // yet the full bar".
+    fn fever_meter_layers_previous_stage_under_current_at_stage_two() {
+        // Per-stage geometry: at stage Two the display's bottom border is
+        // *two colors* — stage-1 gray on the left (the "completed stage One
+        // track") and stage-2 gray on the right (the current fill, growing
+        // right-to-left as score climbs within Two).
         let mut ui = UiState::new();
         climb_to(&mut ui, FeverStage::Two);
-        let want_color = fever_meter_color(&ui, Palette::new(Theme::Dark));
+        let palette = Palette::new(Theme::Dark);
+        let current_color = fever_meter_color(&ui, palette);
+        let base_color = base_meter_color(ui.stage(), palette, &ui)
+            .expect("stage Two has a previous-stage layer");
+        assert_ne!(
+            current_color, base_color,
+            "the two layer colors must differ, or there is no stage change to see"
+        );
         let buf = render(&mut ui);
         let bottom_y = DISPLAY_H - 1;
         let width = buf.area.width;
         let fill = (ui.fever_fill_fraction() * width as f64).round() as u16;
         assert!(fill > 0 && fill < width, "fill {fill} out of (0, {width})");
-        // Right-end cells carry the meter color.
+
+        // Right-end cells: current stage-Two color. One cell at the layer
+        // boundary (the leftmost of the current fill) carries the `<`
+        // marker, which still inherits the current-stage color — so the
+        // whole right region reads as current-stage color.
         for i in 0..fill {
             let x = width - 1 - i;
             assert_eq!(
                 buf[(x, bottom_y)].style().fg,
-                Some(want_color),
-                "right-end cell ({x}, {bottom_y}) must carry stage-Two color"
+                Some(current_color),
+                "cell ({x}, {bottom_y}) in the current fill must carry stage-Two color"
             );
         }
-        // Left-end cells stay unstyled (still default fg, no meter).
+
+        // Left-end cells: the previous stage-One color, drawn *on top* of
+        // the already-rendered `─` border characters.
         for x in 0..(width - fill) {
-            assert!(
-                is_default_fg(&buf[(x, bottom_y)]),
-                "left-end cell ({x}, {bottom_y}) must stay default outside the fill; got {:?}",
-                buf[(x, bottom_y)].style().fg
+            assert_eq!(
+                buf[(x, bottom_y)].style().fg,
+                Some(base_color),
+                "cell ({x}, {bottom_y}) in the base region must carry stage-One color"
             );
         }
+    }
+
+    #[test]
+    fn fever_meter_marker_sits_at_the_layer_boundary() {
+        // The `<` marker is the one visual cue that compensates for the
+        // three stage grays being deliberately close in lightness. It
+        // appears at the leftmost cell of the current fill — the exact pixel
+        // where the previous-stage color yields to the current-stage color
+        // — and only when both regions have width (`0 < fill < total`).
+        let mut ui = UiState::new();
+        climb_to(&mut ui, FeverStage::Three);
+        let buf = render(&mut ui);
+        let bottom_y = DISPLAY_H - 1;
+        let width = buf.area.width;
+        let fill = (ui.fever_fill_fraction() * width as f64).round() as u16;
+        assert!(
+            fill > 0 && fill < width,
+            "test only exercises the interior-boundary case; got fill {fill}"
+        );
+        let marker_x = width - fill;
+        assert_eq!(
+            buf[(marker_x, bottom_y)].symbol(),
+            "<",
+            "marker glyph must sit at the layer boundary"
+        );
     }
 
     #[test]

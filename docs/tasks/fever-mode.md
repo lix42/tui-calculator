@@ -141,25 +141,46 @@ This keeps the press flash readable in stage 1 without reintroducing color.
 ### Meter rendering
 
 The meter *is* the display box's bottom border — zero extra layout footprint.
+Geometry is **per-stage**: each stage drives the fill 0 → 100 % of width in
+its own color, then the next stage overlays from the right while the previous
+stage's color stays on the left as a base layer. (The first pass used an
+overall `score / FEVER_MAX` fill; it collapsed four stages into one bar, and
+the stage 1 color was impossible to distinguish from the resting foreground
+across the first 25 % of the bar. The per-stage geometry gives each stage its
+whole width of visual real estate.)
 
-- **Always present.** At rest the bottom border renders as it does today (the
-  terminal's default foreground). The meter *overrides* specific cells; the box
-  never has a missing edge.
-- **Right-to-left fill.** `fill_cells = round(score * area.width)` cells on the
-  right end take the meter color. One cell tall.
+- **Three regions, drawn right-to-left**:
+  - **Current fill** (`round(fever_fill_fraction * area.width)` cells on the
+    right): the current stage's color.
+  - **Marker** (one cell at the leftmost of the current fill, when
+    `0 < fill < width`): a `<` glyph in the current stage's color. The three
+    stage grays are deliberately close in lightness; the marker is what lets
+    the eye find the current fill head without reading subtle differences.
+  - **Base layer** (the remaining cells on the left): the previous stage's
+    color (stages 2-4), or the border characters *erased with a space*
+    (stage 1 — "below stage 1" is literally nothing, so the display's bottom
+    edge disappears until the meter has climbed into it).
 - **Per-stage color**:
-  - Stage 1: faint neutral (HSLuv `L≈90` on dark, `L≈15` on light; `S=0`) — a
-    hint above the resting foreground, no hue.
-  - Stage 2: `loud(theme)` — bright white on dark, near-black on light.
-  - Stage 3: a single warm hue (orange, ~`H=30`) at `theme_sl` saturation and
-    lightness.
-  - Stage 4: a slowly-rotating hue, period ~20 s, driven off `animation_start`
-    (new `meter_hue_phase()` method, parallel to `breath_phase()`).
+  - Stage 1: dim gray (HSLuv `L≈50` on Dark, `L≈55` on Light; `S=0`).
+  - Stage 2: medium gray (`L≈70` / `L≈32`).
+  - Stage 3: bright gray (`L≈92` / `L≈10`).
+  - Stage 4: a slowly-rotating hue (period 20 s), driven off
+    `fever_meter_hue_phase()` (parallel to `breath_phase()`).
+- **Why grays for 1-3?** Stage 4 is the only place a hue appears — the ladder
+  *earns* color. An earlier design had stage 3 as a warm orange hue; it fought
+  stage 4's drifting rainbow for color space whenever the drift rotated near
+  orange. Three grays sidestep that whole conflict.
 
-Implementation: render the display block as today, then overlay the right
-`fill_cells` of the bottom row via `frame.buffer_mut()[(x, y)].set_fg(…)`. The
-corner characters are included in the fill — the whole bottom edge reads as one
-meter.
+`fever_fill_fraction` returns the sub-stage progress, not overall. At stage
+Three with score 2.5, fraction is `0.5` and the right half of the border is
+stage-Three gray; the left half is stage-Two gray (the previous completed
+layer); stage One's gray is covered by stage Two's and is invisible.
+
+Implementation: render the display block as today, then draw the three
+regions directly to the buffer via
+`frame.buffer_mut()[(x, y)].set_fg(…)` / `.set_symbol(…)`. The corner
+characters are included in the fill — the whole bottom edge reads as one
+meter when the fraction is non-zero.
 
 ### `ColorMode` after fever
 

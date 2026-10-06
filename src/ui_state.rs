@@ -472,12 +472,24 @@ impl UiState {
         self.fever_score
     }
 
-    /// The fever meter as a `0..=1` fill fraction, for the renderer to size
-    /// the bottom-border overlay with. The raw score lives on `0..=FEVER_MAX`;
-    /// exposing it as a fraction here keeps the renderer agnostic of the
-    /// internal scale.
+    /// The fraction of the meter's width to fill with the **current** stage's
+    /// color, `0..=1`. **Per-stage**, not overall: each stage drives the
+    /// meter 0 → 100 % of width (one unit on the `0..=FEVER_MAX` score, so
+    /// `(score - lower_threshold_of_stage)` already lives on `0..=1`).
+    ///
+    /// Hysteresis is honoured by using the *cached* stage: when the score has
+    /// crept past a threshold but the stage hasn't flipped yet, this stays
+    /// clamped at `1.0`, matching the stage that's still cached. The jump at
+    /// the threshold crossing coincides with the effect-gating flip, so the
+    /// whole UI moves together.
     pub fn fever_fill_fraction(&self) -> f64 {
-        (self.fever_score / FEVER_MAX).clamp(0.0, 1.0)
+        let lower = match self.fever_stage {
+            FeverStage::One => 0.0,
+            FeverStage::Two => 1.0,
+            FeverStage::Three => 2.0,
+            FeverStage::Four => 3.0,
+        };
+        (self.fever_score - lower).clamp(0.0, 1.0)
     }
 
     /// Bump the fever meter for a successful input event. Called from
@@ -1429,6 +1441,50 @@ mod tests {
         }
         assert_eq!(ui.stage(), FeverStage::Four);
         assert_eq!(ui.color_mode(), ColorMode::Rainbow); // and rainbow unlocks
+    }
+
+    #[test]
+    fn fever_fill_fraction_resets_at_each_stage_boundary() {
+        // Per-stage geometry: each stage drives the fraction 0 → 1 and then
+        // resets. At the mid-point of each stage, the fraction is ~0.5
+        // regardless of which stage we're in. Score and cached stage are
+        // forced in sync directly here; in production `apply_decay` keeps
+        // them consistent on its own.
+        let mut ui = UiState::new();
+        for (score, stage) in [
+            (0.5, FeverStage::One),
+            (1.5, FeverStage::Two),
+            (2.5, FeverStage::Three),
+            (3.5, FeverStage::Four),
+        ] {
+            ui.fever_score = score;
+            ui.fever_stage = stage;
+            let fraction = ui.fever_fill_fraction();
+            assert!(
+                (fraction - 0.5).abs() < 1e-9,
+                "stage {stage:?} at score {score}: fraction {fraction} ≠ 0.5"
+            );
+        }
+    }
+
+    #[test]
+    fn fever_fill_fraction_clamps_within_hysteresis_band() {
+        // When the raw score has crept past a threshold but the cached stage
+        // hasn't flipped yet (hysteresis still holding), the fill fraction
+        // for that stage clamps at 1.0 rather than racing ahead of the
+        // stage. Same shape on the other end: a score briefly below the
+        // lower edge of the deadband (before the demote fires) still reads
+        // as the cached stage at fraction 0.
+        let mut ui = UiState::new();
+        // Score 1.05 is past the stage-1 upper boundary (1.0) but not past
+        // its upper hysteresis edge (1.08), so stage is still One.
+        ui.fever_score = 1.05;
+        ui.fever_stage = FeverStage::One;
+        assert_eq!(ui.fever_fill_fraction(), 1.0);
+        // Mirror on the demote side: score 0.95 after being in stage Two.
+        ui.fever_score = 0.95;
+        ui.fever_stage = FeverStage::Two;
+        assert_eq!(ui.fever_fill_fraction(), 0.0);
     }
 
     #[test]

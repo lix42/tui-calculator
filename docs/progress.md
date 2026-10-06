@@ -988,9 +988,30 @@ internal view only. `t` (theme) stays as a user preference, orthogonal to fever.
   scale and the climb felt too fast (one press was 60 % of a stage), so the
   internal score was rescaled to 0..4 while the constants stayed. 10 presses
   in 15 s now net `+0.75` of one stage — a burst climbs noticeably but
-  doesn't skip. `fever_fill_fraction()` is the one accessor that normalises
-  for the renderer; the 0..4 shape is otherwise invisible outside
-  `ui_state.rs`.
+  doesn't skip.
+
+- **Meter geometry is per-stage, not overall.** The first visual pass filled
+  the whole bar from `score / FEVER_MAX` and recolored it per stage; the
+  stage-1 band (0..25 %) was impossible to distinguish from the resting
+  foreground, and only four cells of real estate landed on the stage you
+  were actually in. Rewritten so each stage drives its own 0 → 100 % fill in
+  its own color (`fever_fill_fraction` now returns sub-stage progress). The
+  previous stage's color stays as a base layer on the left; the current
+  stage's color overlays from the right; a one-cell `<` marker sits at the
+  layer boundary — the three stage grays are intentionally close in
+  lightness, so the marker is what carries the "here's the current head"
+  signal without relying on fine color discrimination. At score 0 the bottom
+  border is literally erased (space characters) because "below stage 1"
+  layer is nothing.
+
+- **Grayscale 1-3, hue only at 4.** An earlier draft used a warm orange hue
+  for stage 3; it collided with stage 4's drifting rainbow whenever the
+  drift rotated near orange. Three grays (dim / medium / bright, each one
+  step further from the background per theme — same `loud`/`knockout`/
+  ripple/breath convention) sidestep the conflict and give stage 4 the only
+  color-carrying slot. Grays mean the three stage colors are hard to tell
+  apart on their own, which is exactly what the `<` marker exists to
+  compensate for.
 
 ## Next Task
 
