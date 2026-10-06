@@ -58,20 +58,23 @@ one.
 ### Fever mode
 
 Typing drives a four-stage visual ladder. The meter *is* the display box's bottom
-border — it fills right-to-left as you type and drains when you stop.
+border — it fills right-to-left as you type and drains when you stop. The score
+runs on a `0..4` scale, one unit per stage.
 
 | Stage | Reached at score | Looks like                                              |
 |------:|:-----------------|:--------------------------------------------------------|
 |   1   | 0 (startup)      | Plain. No palette color, no decorative animation.       |
-|   2   | 0.25             | Mono highlights come alive on focus and press.          |
-|   3   | 0.50             | Press ripple + display breath animations unlock.        |
-|   4   | 0.75             | Full per-digit rainbow + the hue drift on successful `=`. |
+|   2   | 1.0              | Mono highlights come alive on focus and press.          |
+|   3   | 2.0              | Press ripple + display breath animations unlock.        |
+|   4   | 3.0              | Full per-digit rainbow + the hue drift on successful `=`. |
 
-- **Climb:** `+0.15` per press.
-- **Decay:** `-0.05`/second of idle time. A full meter empties in 20 seconds flat.
+- **Climb:** `+0.15` per press (one press = 15 % of a stage, so climbing a stage
+  from zero takes about 7 presses net of decay).
+- **Decay:** `-0.05`/second of idle time. One stage drains in 20 seconds, the
+  full ladder in 80.
 - **Reading grace:** after a successful `=`, decay freezes for 2.5 seconds — a
   short pause to look at the result doesn't cost altitude.
-- **Hysteresis:** `±0.02` around each stage threshold, so a score hovering at a
+- **Hysteresis:** `±0.08` around each stage threshold, so a score hovering at a
   boundary doesn't flap between stages.
 
 There is no manual rainbow toggle. The way to see rainbow is to type.

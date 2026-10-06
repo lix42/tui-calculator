@@ -319,11 +319,14 @@ fn draw_display(frame: &mut Frame, app: &App, ui: &mut UiState, palette: Palette
 /// bottom edge reads as one meter rather than a line sandwiched between two
 /// uncolored corners.
 fn draw_fever_meter(frame: &mut Frame, ui: &UiState, palette: Palette, area: Rect) {
-    let score = ui.fever_score();
-    if score <= 0.0 || area.width == 0 || area.height == 0 {
+    // `fever_fill_fraction` is the renderer's view of the score — `0.0..=1.0`
+    // regardless of the internal scale `ui_state` keeps it on. If any of
+    // these pre-conditions fail there is simply nothing to paint.
+    let fraction = ui.fever_fill_fraction();
+    if fraction <= 0.0 || area.width == 0 || area.height == 0 {
         return;
     }
-    let fill = (score * area.width as f64).round() as u16;
+    let fill = (fraction * area.width as f64).round() as u16;
     if fill == 0 {
         return;
     }
@@ -1629,16 +1632,19 @@ mod tests {
 
     /// Climb the fever meter to a target stage by firing presses. Avoids
     /// reaching into private fields; panics if the meter saturates before the
-    /// target is reached (which would mean a hysteresis bug).
+    /// target is reached (which would mean a hysteresis bug). Thirty presses
+    /// is enough to reach any stage on the `0..=FEVER_MAX` scale — stage Four
+    /// needs ~21 presses from zero, which leaves plenty of headroom for the
+    /// microscopic decay between back-to-back calls.
     fn climb_to(ui: &mut UiState, target: FeverStage) {
-        for _ in 0..20 {
+        for _ in 0..40 {
             if ui.stage() == target {
                 return;
             }
             ui.register_press_fever();
         }
         panic!(
-            "20 presses didn't reach {target:?} (ended at {:?}, score {})",
+            "40 presses didn't reach {target:?} (ended at {:?}, score {})",
             ui.stage(),
             ui.fever_score()
         );
@@ -1673,19 +1679,19 @@ mod tests {
 
     #[test]
     fn fever_meter_fills_the_bottom_border_right_to_left_at_stage_two() {
-        // Two presses yield a score ≈ 0.30, which puts the meter in stage Two
-        // (upper hysteresis edge at 0.27). On the 28-wide standard panel that
-        // is `round(0.30 * 28) ≈ 8` filled cells on the *right*, each carrying
-        // the stage-Two color. The left cells remain default (no fg).
+        // Climb to stage Two via the public API, then verify the right-end
+        // cells of the display's bottom border carry the stage-Two color and
+        // the left-end cells stay default. The exact fill count depends on
+        // where in stage Two the ladder lands — any count in (0, width) is
+        // acceptable, since the meter's job is "something on the right, not
+        // yet the full bar".
         let mut ui = UiState::new();
-        ui.register_press_fever();
-        ui.register_press_fever();
-        assert_eq!(ui.stage(), FeverStage::Two);
+        climb_to(&mut ui, FeverStage::Two);
         let want_color = fever_meter_color(&ui, Palette::new(Theme::Dark));
         let buf = render(&mut ui);
         let bottom_y = DISPLAY_H - 1;
         let width = buf.area.width;
-        let fill = (ui.fever_score() * width as f64).round() as u16;
+        let fill = (ui.fever_fill_fraction() * width as f64).round() as u16;
         assert!(fill > 0 && fill < width, "fill {fill} out of (0, {width})");
         // Right-end cells carry the meter color.
         for i in 0..fill {
@@ -1708,10 +1714,11 @@ mod tests {
 
     #[test]
     fn fever_meter_fills_whole_bottom_border_at_stage_four() {
-        // Seven presses pin the score at 1.0; the meter should cover every
-        // cell of the bottom border with the stage-Four hue.
+        // Thirty presses saturate the meter at `FEVER_MAX`; the fill fraction
+        // then reads as `1.0` and every cell of the bottom border carries the
+        // stage-Four hue.
         let mut ui = UiState::new();
-        for _ in 0..7 {
+        for _ in 0..30 {
             ui.register_press_fever();
         }
         assert_eq!(ui.stage(), FeverStage::Four);
@@ -1803,11 +1810,7 @@ mod tests {
             "border must be plain at stage One; got {:?}",
             buf[(5, 0)].style().fg
         );
-        // Climb to stage Three (three presses: 0.45; one more pushes to 0.60).
-        for _ in 0..4 {
-            ui.register_press_fever();
-        }
-        assert_eq!(ui.stage(), FeverStage::Three);
+        climb_to(&mut ui, FeverStage::Three);
         let buf = render(&mut ui);
         assert!(
             !is_default_fg(&buf[(5, 0)]),

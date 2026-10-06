@@ -44,27 +44,38 @@ things worth keeping explicit:
 
 ### Mechanic (rate math)
 
-A score in `0..=1`, with constants:
+A score in `0..=FEVER_MAX`, where **one unit is one stage** (not a 0..1
+progress bar across four bands). The 0..4 shape is what the constants read
+against — a reader sees "+0.15 per press, −0.05 per second, thresholds at
+1 / 2 / 3" and immediately knows one press moves ~15 % of a stage.
 
 | Constant        | Value         | What it is                                 |
 |-----------------|---------------|--------------------------------------------|
+| `FEVER_MAX`     | `4.0`         | Top of the meter (one unit per stage)      |
 | `FEVER_CLIMB`   | `0.15`/press  | How much a press adds                      |
 | `FEVER_DECAY`   | `0.05`/sec    | How fast the score falls when idle         |
 | `FEVER_GRACE`   | `2.5 s`       | Decay-pause after a successful `=`         |
-| `FEVER_HYSTERESIS` | `0.02`     | Band around each threshold to avoid flaps  |
-| Thresholds      | 0.25 / 0.5 / 0.75 | Stage boundaries (hysteresis around each) |
+| `FEVER_HYSTERESIS` | `0.08`     | Band around each threshold to avoid flaps  |
+| Thresholds      | 1.0 / 2.0 / 3.0 | Stage boundaries (hysteresis around each) |
 
 Consequences:
 
 - Steady-state typing rate (climb balances decay) is `0.05 / 0.15 ≈ 0.33`
-  presses/sec, i.e. one every ~3 s.
-- 10 presses in 15 s is `+1.5` from presses, `-0.75` from decay → net `+0.75`,
-  which is from zero to the stage-3 threshold. The intent here is **generous**
-  (one burst gets you to full-color territory); the climb constant was raised
-  from an earlier `+0.10` with eyes open to that.
-- 20 s idle takes a full-meter down to zero, i.e. all four stages lost.
+  presses/sec, i.e. one every ~3 s — the maintenance pace.
+- 10 presses in 15 s is `+1.5` from presses, `−0.75` from decay → net `+0.75`,
+  which is three-quarters of one stage. A burst gets you most of the way to
+  the next stage without skipping over any.
+- One stage drains in 20 s of idle time; the full ladder in 80 s.
 - These are tunable later — all are `const` in `ui_state.rs`; the pure helpers
   mean no clock is involved in tests of either.
+
+### Score representation vs. renderer
+
+The renderer never sees the raw `0..4` score; `UiState::fever_fill_fraction()`
+normalises it to `0..1` for the meter fill width. The 0..4 form stays an
+implementation detail of `ui_state.rs`, so the renderer's geometry code reads
+"width × fraction" without any mental scaling and the renderer tests work in
+`0..1` space.
 
 ### Reading grace on `=`
 

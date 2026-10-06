@@ -983,10 +983,14 @@ internal view only. `t` (theme) stays as a user preference, orthogonal to fever.
 - **The three colored stage knobs** (`faint_meter` lightness, `warm_meter`
   hue, `FEVER_METER_PERIOD`) are tunable by eye. Current values (90/12,
   `H=30`, 20 s) were picked without playtest; expect at least one tweak.
-- **`+0.15/press` is deliberately generous.** 10 presses in 15 s net `+0.75`
-  — one burst from zero reaches the stage-Three threshold. If the ladder
-  feels too easy once in use, cut to `+0.10` (which was the earlier spec
-  before Lix bumped it) or `+0.075` (10-presses-in-15s = one stage exactly).
+- **`+0.15/press` is a 15 % climb *per stage*.** The score runs on `0..=4`
+  (one unit per stage), not `0..=1` — the first implementation used a 0..1
+  scale and the climb felt too fast (one press was 60 % of a stage), so the
+  internal score was rescaled to 0..4 while the constants stayed. 10 presses
+  in 15 s now net `+0.75` of one stage — a burst climbs noticeably but
+  doesn't skip. `fever_fill_fraction()` is the one accessor that normalises
+  for the renderer; the 0..4 shape is otherwise invisible outside
+  `ui_state.rs`.
 
 ## Next Task
 

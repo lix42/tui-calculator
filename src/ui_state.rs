@@ -61,16 +61,25 @@ const FEVER_METER_PERIOD: Duration = Duration::from_secs(20);
 /// as a glitch rather than a flourish.
 const DRIFT_DURATION: Duration = Duration::from_millis(1400);
 
-/// How much a single press adds to the fever meter, on the `0..=1` scale.
-///
-/// Climb beats decay at any sustained rate above `FEVER_DECAY / FEVER_CLIMB`
-/// presses per second (≈ one every 3 s with the current constants), so slow
-/// typing holds the meter, bursts climb it, and silence drains it. See
-/// `docs/tasks/fever-mode.md` for the rate math and tuning options.
+/// The top of the fever meter — the score is clamped to `0..=FEVER_MAX`, with
+/// each unit representing one stage. One unit = one stage keeps the climb and
+/// decay constants (`+0.15/press`, `-0.05/s`) reading as "per stage" rather
+/// than per-abstract-progress — a reader sees "20 s of idle decay loses one
+/// unit, which is one stage" with no mental scaling.
+const FEVER_MAX: f64 = 4.0;
+
+/// How much a single press adds to the fever meter, on the `0..=FEVER_MAX`
+/// scale. One press moves 15 % of a stage, so climbing a stage from zero
+/// takes about seven presses net of decay. Climb beats decay at any sustained
+/// rate above `FEVER_DECAY / FEVER_CLIMB` ≈ one press every 3 s — slow typing
+/// holds the meter, bursts climb it, and silence drains it. See
+/// `docs/tasks/fever-mode.md` for the full rate math.
 const FEVER_CLIMB: f64 = 0.15;
 
-/// How fast the fever meter decays when the user isn't typing, in `score` units
-/// per second. A full meter drops to zero in `1.0 / FEVER_DECAY` ≈ 20 seconds.
+/// How fast the fever meter decays when the user isn't typing, in `score`
+/// units per second. One unit is one stage, so 20 s of idle silence drops the
+/// meter by one stage (and the full ladder drains in `FEVER_MAX / FEVER_DECAY`
+/// = 80 s).
 const FEVER_DECAY: f64 = 0.05;
 
 /// How long decay is suppressed after a successful `=`, so a short reading pause
@@ -81,7 +90,9 @@ const FEVER_GRACE: Duration = Duration::from_millis(2500);
 /// Deadband around each stage threshold, to keep a score oscillating within a
 /// hair of a boundary from flapping back and forth between stages every tick.
 /// Promoting requires `score >= threshold + H`, demoting `score <= threshold - H`.
-const FEVER_HYSTERESIS: f64 = 0.02;
+/// 0.08 is 8 % of a stage — small enough to be imperceptible, large enough to
+/// swallow one-press-per-second-ish float noise around a threshold.
+const FEVER_HYSTERESIS: f64 = 0.08;
 
 /// What a transient visual effect *is*, plus whatever that kind of effect needs
 /// to know where it happened.
@@ -276,41 +287,43 @@ fn decayed_with_grace(prev: f64, elapsed_secs: f64, grace_remaining_secs: f64) -
 
 /// The stage `score` belongs to when the previous stage was `current`.
 ///
-/// Hysteresis: once in a stage, you leave it only when the score has crossed
-/// the boundary by `FEVER_HYSTERESIS`. Promoting requires the upper edge of the
-/// deadband; demoting requires the lower edge. Right at a threshold nothing
-/// moves. Pure and totally-matched over `FeverStage`.
+/// Each stage occupies one unit on the `0..=FEVER_MAX` scale, with thresholds
+/// at `1.0 / 2.0 / 3.0`. Hysteresis: once in a stage, you leave it only when
+/// the score has crossed the boundary by `FEVER_HYSTERESIS`. Promoting
+/// requires the upper edge of the deadband; demoting requires the lower edge.
+/// Right at a threshold nothing moves. Pure and totally-matched over
+/// `FeverStage`.
 fn next_stage(current: FeverStage, score: f64) -> FeverStage {
     use FeverStage::*;
     const H: f64 = FEVER_HYSTERESIS;
     match current {
         One => {
-            if score >= 0.25 + H {
+            if score >= 1.0 + H {
                 Two
             } else {
                 One
             }
         }
         Two => {
-            if score >= 0.50 + H {
+            if score >= 2.0 + H {
                 Three
-            } else if score <= 0.25 - H {
+            } else if score <= 1.0 - H {
                 One
             } else {
                 Two
             }
         }
         Three => {
-            if score >= 0.75 + H {
+            if score >= 3.0 + H {
                 Four
-            } else if score <= 0.50 - H {
+            } else if score <= 2.0 - H {
                 Two
             } else {
                 Three
             }
         }
         Four => {
-            if score <= 0.75 - H {
+            if score <= 3.0 - H {
                 Three
             } else {
                 Four
@@ -450,11 +463,21 @@ impl UiState {
         self.fever_stage
     }
 
-    /// The current fever meter score, on `0..=1`. The renderer draws it as a
-    /// right-to-left fill on the display's bottom border. Returned as the
-    /// cached value — `tick` or a press bring it up to date.
+    /// The current fever meter score, on `0..=FEVER_MAX` (one unit per stage).
+    /// The renderer uses the normalized form via [`fever_fill_fraction`]
+    /// (Self::fever_fill_fraction); callers that want the raw score for
+    /// diagnostics or tests use this. Returned as the cached value — `tick`
+    /// or a press bring it up to date.
     pub fn fever_score(&self) -> f64 {
         self.fever_score
+    }
+
+    /// The fever meter as a `0..=1` fill fraction, for the renderer to size
+    /// the bottom-border overlay with. The raw score lives on `0..=FEVER_MAX`;
+    /// exposing it as a fraction here keeps the renderer agnostic of the
+    /// internal scale.
+    pub fn fever_fill_fraction(&self) -> f64 {
+        (self.fever_score / FEVER_MAX).clamp(0.0, 1.0)
     }
 
     /// Bump the fever meter for a successful input event. Called from
@@ -464,7 +487,7 @@ impl UiState {
     pub fn register_press_fever(&mut self) {
         let now = Instant::now();
         self.apply_decay(now);
-        self.fever_score = (self.fever_score + FEVER_CLIMB).min(1.0);
+        self.fever_score = (self.fever_score + FEVER_CLIMB).min(FEVER_MAX);
         self.fever_stage = next_stage(self.fever_stage, self.fever_score);
     }
 
@@ -1227,15 +1250,18 @@ mod tests {
         let mut ui = UiState::new();
         assert_eq!(ui.stage(), FeverStage::One);
         assert_eq!(ui.color_mode(), ColorMode::Mono);
-        // Any stage below Four is still mono.
-        for score in [0.3, 0.6] {
+        // Scores inside stages Two and Three are still mono. Each stage spans
+        // one unit on the `0..=FEVER_MAX` scale, so 1.5 is firmly in Two and
+        // 2.5 firmly in Three.
+        for score in [1.5, 2.5] {
             ui.fever_score = score;
             ui.fever_stage = next_stage(ui.fever_stage, score);
             assert_eq!(ui.color_mode(), ColorMode::Mono, "stage {:?}", ui.stage());
         }
-        // At stage Four the derivation flips to rainbow.
-        ui.fever_score = 0.9;
-        ui.fever_stage = next_stage(ui.fever_stage, 0.9);
+        // At stage Four the derivation flips to rainbow (3.5 is past the 3.08
+        // upper-hysteresis edge).
+        ui.fever_score = 3.5;
+        ui.fever_stage = next_stage(ui.fever_stage, 3.5);
         assert_eq!(ui.stage(), FeverStage::Four);
         assert_eq!(ui.color_mode(), ColorMode::Rainbow);
     }
@@ -1327,13 +1353,14 @@ mod tests {
 
     #[test]
     fn next_stage_climbs_at_the_upper_hysteresis_edge() {
-        // Promoting requires `score >= threshold + FEVER_HYSTERESIS`. The exact
-        // boundary (0.25) holds; just over the edge (0.27 with H=0.02) crosses.
-        assert_eq!(next_stage(FeverStage::One, 0.25), FeverStage::One);
-        assert_eq!(next_stage(FeverStage::One, 0.26), FeverStage::One);
-        assert_eq!(next_stage(FeverStage::One, 0.27), FeverStage::Two);
-        assert_eq!(next_stage(FeverStage::Two, 0.52), FeverStage::Three);
-        assert_eq!(next_stage(FeverStage::Three, 0.77), FeverStage::Four);
+        // Promoting requires `score >= threshold + FEVER_HYSTERESIS`. The
+        // exact boundary (1.0) holds; just over the edge (1.09 with H=0.08)
+        // crosses. The thresholds are 1.0/2.0/3.0 on the `0..=FEVER_MAX` scale.
+        assert_eq!(next_stage(FeverStage::One, 1.0), FeverStage::One);
+        assert_eq!(next_stage(FeverStage::One, 1.07), FeverStage::One);
+        assert_eq!(next_stage(FeverStage::One, 1.09), FeverStage::Two);
+        assert_eq!(next_stage(FeverStage::Two, 2.09), FeverStage::Three);
+        assert_eq!(next_stage(FeverStage::Three, 3.09), FeverStage::Four);
     }
 
     #[test]
@@ -1341,18 +1368,19 @@ mod tests {
         // Demoting requires `score <= threshold - FEVER_HYSTERESIS`. Mirror of
         // the climb test — the deadband keeps the stage from flapping on either
         // side of a threshold.
-        assert_eq!(next_stage(FeverStage::Two, 0.23), FeverStage::One);
-        assert_eq!(next_stage(FeverStage::Two, 0.24), FeverStage::Two);
-        assert_eq!(next_stage(FeverStage::Three, 0.48), FeverStage::Two);
-        assert_eq!(next_stage(FeverStage::Four, 0.73), FeverStage::Three);
+        assert_eq!(next_stage(FeverStage::Two, 0.91), FeverStage::One);
+        assert_eq!(next_stage(FeverStage::Two, 0.93), FeverStage::Two);
+        assert_eq!(next_stage(FeverStage::Three, 1.91), FeverStage::Two);
+        assert_eq!(next_stage(FeverStage::Four, 2.91), FeverStage::Three);
     }
 
     #[test]
     fn next_stage_holds_within_the_hysteresis_band() {
-        // Right in the deadband around each threshold, every stage holds. This
-        // is the whole purpose of the hysteresis: a score hovering around 0.25
-        // (± 0.02) must not oscillate between One and Two every tick.
-        for score in [0.24, 0.25, 0.26] {
+        // Right in the deadband around each threshold, every stage holds.
+        // Hysteresis at ±0.08 around 1.0 means [0.92, 1.08] is the "no
+        // movement" window — a score hovering there must not flap between
+        // adjacent stages every tick.
+        for score in [0.95, 1.0, 1.05] {
             assert_eq!(next_stage(FeverStage::One, score), FeverStage::One);
             assert_eq!(next_stage(FeverStage::Two, score), FeverStage::Two);
         }
@@ -1389,13 +1417,14 @@ mod tests {
 
     #[test]
     fn fever_climbs_through_the_full_ladder() {
-        // Seven back-to-back presses climb from stage One to Four: 7 * 0.15 =
-        // 1.05 → clamps at 1.0, which is firmly past the 0.77 upper-hysteresis
-        // edge for Four. The whole ladder is reachable in a short burst,
-        // deliberately — the mechanic is meant to feel generous, not punishing.
+        // Reaching stage Four requires passing the 3.08 upper-hysteresis
+        // edge; at `+0.15/press` and ~zero decay between back-to-back presses,
+        // that's about 21 presses (3.08 / 0.15 ≈ 20.5). Thirty is comfortably
+        // past, which lets the test tolerate a stray microsecond of decay
+        // without flaking.
         let mut ui = UiState::new();
         assert_eq!(ui.stage(), FeverStage::One);
-        for _ in 0..7 {
+        for _ in 0..30 {
             ui.register_press_fever();
         }
         assert_eq!(ui.stage(), FeverStage::Four);
@@ -1413,20 +1442,23 @@ mod tests {
         // a few microseconds past the one `new()` captured) so the arithmetic
         // below lines up exactly on the grace boundary.
         let mut ui = UiState::new();
-        ui.fever_score = 0.9;
+        // Pick a score sitting comfortably in stage Three (score 2.5 on the
+        // 0..=4 scale) so the decay math moves it visibly without hitting
+        // either bound of the meter.
+        ui.fever_score = 2.5;
         let start = ui.fever_last_tick;
         ui.reading_grace_until = Some(start + FEVER_GRACE);
         // Simulate one second passing *inside* the grace window.
         ui.apply_decay(start + Duration::from_secs(1));
         assert!(
-            (ui.fever_score - 0.9).abs() < 1e-9,
+            (ui.fever_score - 2.5).abs() < 1e-9,
             "grace must freeze the meter; got {}",
             ui.fever_score
         );
         // Now 3 s past the start — grace expired at 2.5 s, so decay runs for
         // the remaining 0.5 s only.
         ui.apply_decay(start + Duration::from_secs(3));
-        let want = 0.9 - 0.5 * FEVER_DECAY;
+        let want = 2.5 - 0.5 * FEVER_DECAY;
         assert!(
             (ui.fever_score - want).abs() < 1e-9,
             "post-grace decay wrong; got {}, want {want}",
