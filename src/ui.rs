@@ -1141,11 +1141,12 @@ mod tests {
         );
 
         // And the live wiring reaches it: a drift in flight under mono still
-        // resolves to the resting palette.
+        // resolves to the resting palette. `UiState::new()` starts at
+        // `FeverStage::One`, which is mono — the user has not yet typed enough
+        // to climb into rainbow territory.
         let mut ui = UiState::new();
         ui.register_press("=");
         ui.register_drift();
-        ui.toggle_color_mode(); // → mono
         assert_eq!(frame_palette(&ui), Palette::new(Theme::Dark));
     }
 
