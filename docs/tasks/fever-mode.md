@@ -1,0 +1,235 @@
+# fever-mode: Typing-Driven Four-Stage Visual Ladder
+
+## Goal
+
+Turn the user's typing pace into a visual reward: as they type, a meter climbs
+through four discrete stages, each enabling more of the UI's visual repertoire.
+Idle time decays the meter back down. Fever **replaces** the manual `r` toggle —
+the only path to the rainbow is to type.
+
+The four stages, each 0.25 of the 0..1 meter:
+
+1. **plain** — no digit coloring, no mono highlight accent, no decorative
+   animation. The press flash still fires (it's input confirmation, not
+   decoration).
+2. **colored highlights** — focus and press use the per-key palette color
+   (today's mono look).
+3. **colored highlights + animation** — adds the press ripple and the always-on
+   display breath.
+4. **rainbow + animation** — per-digit rainbow hues on display and grid, plus
+   the hue drift on successful `=`.
+
+## Decided — read these before the design
+
+The design cycle (see the conversation that prompted this doc) settled a few
+things worth keeping explicit:
+
+- **Fever replaces `r`.** No manual mono/rainbow toggle. `t` (theme) stays — it
+  is orthogonal to fever stages and acts in both.
+- **4 stages, not 3.** Stage 1 ("plain-plain") and stage 2 ("colored, no
+  animation") are *new* states — stage 2 is today's mono, stage 1 is new. Each
+  stage transition is a different axis (color appears → animation appears →
+  rainbow replaces mono), so the ladder is three independent switches, not one
+  dial.
+- **Snap, don't blend between stages.** Within a stage the meter grows smoothly;
+  crossing a threshold snaps the visual state. Blending would be ambiguous
+  because the stages differ in *kind*, not degree.
+- **Press flash stays always on.** It is input confirmation, not decoration.
+  Only ripple / breath / drift gate on `animated()`.
+- **Silent transitions.** No one-off flash on stage-up or stage-down; the
+  meter's color/length change *is* the signal. If a celebration tells itself
+  later, it's a one-shot ripple fired from the meter — a cheap retrofit.
+
+## Design
+
+### Mechanic (rate math)
+
+A score in `0..=1`, with constants:
+
+| Constant        | Value         | What it is                                 |
+|-----------------|---------------|--------------------------------------------|
+| `FEVER_CLIMB`   | `0.15`/press  | How much a press adds                      |
+| `FEVER_DECAY`   | `0.05`/sec    | How fast the score falls when idle         |
+| `FEVER_GRACE`   | `2.5 s`       | Decay-pause after a successful `=`         |
+| `FEVER_HYSTERESIS` | `0.02`     | Band around each threshold to avoid flaps  |
+| Thresholds      | 0.25 / 0.5 / 0.75 | Stage boundaries (hysteresis around each) |
+
+Consequences:
+
+- Steady-state typing rate (climb balances decay) is `0.05 / 0.15 ≈ 0.33`
+  presses/sec, i.e. one every ~3 s.
+- 10 presses in 15 s is `+1.5` from presses, `-0.75` from decay → net `+0.75`,
+  which is from zero to the stage-3 threshold. The intent here is **generous**
+  (one burst gets you to full-color territory); the climb constant was raised
+  from an earlier `+0.10` with eyes open to that.
+- 20 s idle takes a full-meter down to zero, i.e. all four stages lost.
+- These are tunable later — all are `const` in `ui_state.rs`; the pure helpers
+  mean no clock is involved in tests of either.
+
+### Reading grace on `=`
+
+A successful `=` (the existing `app.copy_text().is_some()` gate — `Mode::Evaluated`,
+same guard the hue drift uses) sets `reading_grace_until = Instant::now() + 2.5s`.
+While that time has not arrived, decay is suppressed; a short reading pause after
+hitting `=` doesn't cost altitude.
+
+A syntax error or an `=` on an empty expression leaves the grace untouched — it
+is a reward for a result, not for pressing `=`.
+
+### Hysteresis
+
+Each threshold has a `±FEVER_HYSTERESIS` band. Once in stage N, you stay there
+until the score has clearly crossed the boundary — crossing `0.25` up to `0.27`
+promotes, crossing back down to `0.23` demotes. Right at `0.25` nothing flips.
+This is a pure function of `(current_stage, score)` and ships with its own unit
+tests.
+
+### Lazy time
+
+The meter is advanced in two places:
+
+- `UiState::tick()` (called once per draw iteration) applies decay from
+  `fever_last_tick` to `Instant::now()`, respecting any active grace window, and
+  recomputes the cached stage.
+- `register_press_fever` (called from `activate` after `register_press`) applies
+  decay, bumps the score by `FEVER_CLIMB`, clamps to `1.0`, and recomputes.
+
+All other reads (`stage()`, `score()`) just return the cached values. Tests
+drive the pure math (`score_after_decay`, `next_stage`) directly without a clock.
+
+### Effect gating
+
+Fever adds no new `EffectKind`s. Instead, the renderer reads `ui.stage()` and
+decides what to show. The data model stays unchanged (press flash and ripple
+still both fire on every press; drift still fires on every successful `=`), and
+only *rendering* branches on stage:
+
+| Visual element     | Gate                                   |
+|--------------------|-----------------------------------------|
+| Press chip-flash   | always rendered                         |
+| Colored highlights (focus/press) on buttons | `stage.colored_highlights()` (≥ 2) |
+| Rainbow digit hues (display + button text) | `stage.rainbow()` (= 4) |
+| Press ripple       | `stage.animated()` (≥ 3)                |
+| Display breath     | `stage.animated()` (≥ 3)                |
+| Hue drift          | gated via `ColorMode` (Mono at stages 1-3 → `palette_for` returns resting palette) |
+
+Rainbow drift is "free-gated" by `color_mode()` returning `Mono` at stages 1-3:
+`palette_for` already drops the drift for Mono. No separate gate needed.
+
+### Stage 1 (plain) focus/press
+
+At stage 1 the current `button_style` can't be used — it draws from the palette
+regardless. A new `plain_style(focused, pressed)` returns a color-free style:
+
+- Focused: `BorderType::Thick` (shape distinction, no color)
+- Pressed: `Modifier::REVERSED` on the block (visible flash, no color)
+- Resting: `REGULAR_STYLE` unchanged
+
+This keeps the press flash readable in stage 1 without reintroducing color.
+
+### Meter rendering
+
+The meter *is* the display box's bottom border — zero extra layout footprint.
+
+- **Always present.** At rest the bottom border renders as it does today (the
+  terminal's default foreground). The meter *overrides* specific cells; the box
+  never has a missing edge.
+- **Right-to-left fill.** `fill_cells = round(score * area.width)` cells on the
+  right end take the meter color. One cell tall.
+- **Per-stage color**:
+  - Stage 1: faint neutral (HSLuv `L≈90` on dark, `L≈15` on light; `S=0`) — a
+    hint above the resting foreground, no hue.
+  - Stage 2: `loud(theme)` — bright white on dark, near-black on light.
+  - Stage 3: a single warm hue (orange, ~`H=30`) at `theme_sl` saturation and
+    lightness.
+  - Stage 4: a slowly-rotating hue, period ~20 s, driven off `animation_start`
+    (new `meter_hue_phase()` method, parallel to `breath_phase()`).
+
+Implementation: render the display block as today, then overlay the right
+`fill_cells` of the bottom row via `frame.buffer_mut()[(x, y)].set_fg(…)`. The
+corner characters are included in the fill — the whole bottom edge reads as one
+meter.
+
+### `ColorMode` after fever
+
+The `ColorMode` enum stays (it is still the renderer's internal view of "is this
+rainbow?"), but it is now **derived** from stage, not stored:
+
+```rust
+pub fn color_mode(&self) -> ColorMode {
+    if self.stage() == FeverStage::Four { ColorMode::Rainbow } else { ColorMode::Mono }
+}
+```
+
+The `color_mode` field is removed. `toggle_color_mode` is removed. Tests that
+drove rainbow via that toggle climb the meter instead.
+
+## Implementation Suggestion
+
+Three commits, in order:
+
+1. **Design doc + TASKS entry** (this file + a `[ ] fever-mode` line). Shipped
+   first so the design is reviewable in isolation.
+2. **Fever core.** `FeverStage` enum + pure helpers (`score_after_decay`,
+   `next_stage`) + the four new `UiState` fields + methods
+   (`register_press_fever`, `register_grace`, `stage`, `score`), with
+   `tick`/`activate` wiring. Remove `r`/`R` from `main.rs`; drive
+   `color_mode()` from stage. Delete the two tests that drove the removed
+   toggle; update `drift_is_rainbow_only_but_the_theme_still_applies` to reach
+   mono via "stage < 4" instead of a toggle. Build + 136+ tests green.
+3. **Renderer gating + meter visual + docs.** `plain_style` for stage 1;
+   gate ripple / breath / drift behind `stage.animated()`/`rainbow()`; render
+   the meter on the display's bottom border. Update README (keys table drops
+   `r`; add a Fever section). Update CLAUDE.md's architecture description.
+   TestBackend coverage for stage-1 rendering and meter fill.
+
+### Keeping tests clock-free
+
+The design is deliberately shaped so no test needs a clock:
+
+- `score_after_decay(prev, elapsed_secs)` is a pure `f64` fn.
+- `next_stage(current, score)` is a pure fn, hysteresis included.
+- Reading grace is tested via `apply_decay(prev, elapsed, grace_remaining)`
+  (the pure form of the lazy getter) at chosen phases.
+
+## How to Verify
+
+- `cargo test` stays green throughout; `cargo clippy` and `cargo fmt` clean.
+- Pure helpers covered: climbing promotes exactly at the upper hysteresis edge,
+  falling demotes exactly at the lower edge, flapping at the boundary is a
+  no-op.
+- Reading grace: with grace active, `apply_decay(prev, 1.0, grace_remaining=1.0)`
+  returns the original score (no decay); grace that expires mid-interval decays
+  only the post-grace portion.
+- Meter render: at `score=0.5` on a `28×29` buffer, half the display's bottom
+  row carries the meter color; the rest stays default foreground.
+- Stage 1 render: no palette color appears on any button text or border; focus
+  shows via `BorderType::Thick`; pressed shows via `REVERSED`.
+- Stage gating: ripples don't fire at stages 1-2 (no fever is actually fired,
+  just not *rendered*; `effects()` still contains the ripple); drift renders
+  only at stage 4; breath only at stage ≥ 3.
+- **Manual**: run `cargo run`, press 10 digits in ~5s and watch the meter climb
+  through all four stages; stop typing and watch it decay back; hit `=` on a
+  valid expression and verify the 2.5s reading grace freezes the meter before
+  decay resumes.
+
+## Open Questions
+
+- **Stage 4 meter: slow hue rotation vs. drifting during actual `=` sweeps?**
+  Decided: slow continuous rotation (period ~20 s). An actual `=`-sweep is a
+  display-wide palette rotation; the meter is small enough that one more
+  concurrent cycle wouldn't read against it, so the simpler "meter has its own
+  slow clock" wins.
+- **Mono accent color choice at stage 2.** `loud(theme)` is the plan; the
+  shipped mono's focus-outline already uses the per-key palette color via
+  `button_style`. The meter color at stage 2 (`loud`) is distinct from the
+  button highlight at stage 2 (per-key hue outline). That is intentional — the
+  meter is a per-stage *signal*, the button highlight is per-key. If this reads
+  wrong, swap the meter stage-2 color to the warm hue family stage 3 uses.
+
+## Dependencies
+
+None outstanding. Builds on `rainbow-animation` (effect model + ripple + drift
++ breath), `layout-config` (the per-stage render decisions already consult the
+palette), and the `web-time` swap (`Instant` is available). Independent of
+`web-ratzilla` — fever is pure UI, no clipboard or event-loop implications.
