@@ -467,11 +467,12 @@ impl UiState {
         self.fever_stage
     }
 
-    /// The current fever meter score, on `0..=FEVER_MAX` (one unit per stage).
-    /// The renderer uses the normalized form via [`fever_fill_fraction`]
-    /// (Self::fever_fill_fraction); callers that want the raw score for
-    /// diagnostics or tests use this. Returned as the cached value — `tick`
-    /// or a press bring it up to date.
+    /// The current fever meter score, on `0..=FEVER_MAX` (one unit per
+    /// stage). Test-only: production renders through
+    /// [`fever_fill_fraction`](Self::fever_fill_fraction), which hides the
+    /// internal scale. Exposed here so cross-module tests can print the raw
+    /// score in panic messages without reaching into the private field.
+    #[cfg(test)]
     pub fn fever_score(&self) -> f64 {
         self.fever_score
     }
