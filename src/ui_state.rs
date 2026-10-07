@@ -193,15 +193,19 @@ impl Effect {
     }
 }
 
-/// How the digits are colored. A **presentation-only** toggle — it changes no
-/// calculator state, so it lives on `UiState` (the rendering half), not `App`.
-/// `Rainbow` (each digit `0`–`9` its own hue on both the button grid and the
-/// display) is the default look; `Mono` is the plain fallback (see
+/// How the digits are colored. A **presentation-only** category — it changes
+/// no calculator state, so it lives on `UiState` (the rendering half), not
+/// `App`. `Rainbow` colors each digit `0`–`9` its own hue on both the button
+/// grid and the display; `Mono` is the plain fallback (see
 /// [`crate::ui::glyph_color`]).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+///
+/// Not stored on `UiState` any more — [`UiState::color_mode`] derives it
+/// from the active [`FeverStage`], so there is no `Default` impl: the
+/// startup color (Mono at stage One) is a property of fever, not of this
+/// enum.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ColorMode {
     Mono,
-    #[default]
     Rainbow,
 }
 
@@ -1414,11 +1418,13 @@ mod tests {
         // Each press adds `FEVER_CLIMB` (modulo an immeasurable sliver of
         // decay since construction). After `n` presses the score is within an
         // epsilon of `n * FEVER_CLIMB`, so the test tolerates the real-clock
-        // decay without relying on it being zero.
+        // decay without relying on it being zero. Clamp against `FEVER_MAX`
+        // so the expectation stays correct if the loop ever runs long enough
+        // to saturate.
         let mut ui = UiState::new();
         for n in 1..=5 {
             ui.register_press_fever();
-            let expected = (n as f64 * FEVER_CLIMB).min(1.0);
+            let expected = (n as f64 * FEVER_CLIMB).min(FEVER_MAX);
             let got = ui.fever_score();
             assert!(
                 (got - expected).abs() < 0.01,

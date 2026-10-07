@@ -192,10 +192,12 @@ pub fn draw(frame: &mut Frame, app: &App, ui: &mut UiState) {
 /// which means the same thing either way.
 fn frame_palette(ui: &UiState) -> Palette {
     // The drift is **rainbow-only** (stage Four): earlier stages have no
-    // digit hues to rotate, so reading the drift from `effects` at a lower
-    // stage would waste the lookup and risk a sneakier bug where the mode
-    // gate below gets inverted. Gating at both ends keeps either half from
-    // regressing in isolation.
+    // digit hues to rotate, so this gates the `effects` lookup. `palette_for`
+    // separately refuses to drift under `ColorMode::Mono` as part of its own
+    // contract, but — since `color_mode()` is derived from `stage == Four` —
+    // the two predicates are tautologically equivalent and cannot disagree:
+    // the second check is `palette_for`'s own property, not a backstop for
+    // this one.
     let drift_phase = if ui.stage().rainbow() {
         ui.effects().iter().find_map(|e| match e.kind() {
             EffectKind::Drift => Some(e.progress()),
@@ -1816,21 +1818,35 @@ mod tests {
     #[test]
     fn fever_meter_fills_whole_bottom_border_at_stage_four() {
         // Thirty presses saturate the meter at `FEVER_MAX`; the fill fraction
-        // then reads as `1.0` and every cell of the bottom border carries the
-        // stage-Four hue.
+        // then reads as `1.0` and every cell of the bottom border carries
+        // the same stage-Four hue.
+        //
+        // The color *value* at stage Four depends on `fever_meter_hue_phase`
+        // (a free-running real-time clock), so the test asserts
+        // **uniformity** of the border rather than a specific hue: it reads
+        // the color of one cell out of the rendered buffer and asserts every
+        // other cell matches. Capturing `fever_meter_color(&ui, …)` on a
+        // separate line would read the clock at a different instant than
+        // `render` does — on a loaded CI runner, 18°/s hue rotation could
+        // straddle an HSLuv-to-RGB discretization boundary between the two
+        // reads and flake the test.
         let mut ui = UiState::new();
         for _ in 0..30 {
             ui.register_press_fever();
         }
         assert_eq!(ui.stage(), FeverStage::Four);
-        let want_color = fever_meter_color(&ui, Palette::new(Theme::Dark));
         let buf = render(&mut ui);
         let bottom_y = DISPLAY_H - 1;
+        let reference = buf[(buf.area.x, bottom_y)].style().fg;
+        assert!(
+            reference.is_some_and(|c| c != Color::Reset),
+            "stage-Four border must be colored; got {reference:?}"
+        );
         for x in 0..buf.area.width {
             assert_eq!(
                 buf[(x, bottom_y)].style().fg,
-                Some(want_color),
-                "cell ({x}, {bottom_y}) must carry the stage-Four meter color"
+                reference,
+                "cell ({x}, {bottom_y}) must share the stage-Four hue"
             );
         }
     }
@@ -1894,6 +1910,35 @@ mod tests {
         assert_eq!(pressed.block_style.fg, None);
         assert_eq!(pressed.block_style.bg, None);
         assert_eq!(pressed.border_type, BorderType::Thick);
+    }
+
+    #[test]
+    fn stage_one_button_borders_stay_uncolored_after_a_press() {
+        // Defends the "stage One is color-free" promise against ripple
+        // leaking through at the composition point. `register_press` inserts
+        // a `Ripple` effect into `effects` at *every* stage (effects fire
+        // unconditionally; only rendering branches on stage), so stage One's
+        // "no ripple" relies on the gate in `draw_buttons` setting
+        // `view.ripple = 0.0` whenever `!stage.animated()`. Compose that
+        // against `apply_ripple` directly and the border *does* get colored
+        // — so if the gate regresses, this test catches the bug on screen
+        // before anyone sees it.
+        let mut ui = UiState::new();
+        assert_eq!(ui.stage(), FeverStage::One);
+        ui.register_press("5"); // inserts a Ripple { cell: (2, 1) }
+        let buf = render(&mut ui);
+        // The buttons on the standard pad lay out in CELL_W-wide, CELL_H-tall
+        // tiles under the display. Button "4" sits at pad row 2, col 0 — one
+        // step from the pressed "5", i.e. where the ripple is strongest. Its
+        // top-border row is at y = DISPLAY_H + 2 * CELL_H; x = 3 is well
+        // inside the edge, away from the rounded corner glyph.
+        let x = 3u16;
+        let y = DISPLAY_H + 2 * CELL_H;
+        assert!(
+            is_default_fg(&buf[(x, y)]),
+            "stage-One border cell ({x}, {y}) must stay uncolored even with a ripple in flight; got {:?}",
+            buf[(x, y)].style().fg
+        );
     }
 
     #[test]
