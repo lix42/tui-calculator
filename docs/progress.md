@@ -889,6 +889,17 @@ one-line change is to `retain` the global `Drift` in `start_effects`.
 
 ## fever-mode — `src/ui_state.rs`, `src/ui.rs`, `src/main.rs`
 
+**Shipped** 2026-10-06 as PR #25 (branch `fever-mode`). 180 tests pass;
+`cargo fmt`, `cargo clippy`, `cargo clippy --tests` clean. Followed the
+`/ship:ship` workflow; two reviewers ran (ship diff-reviewer surfaced doc
+drift between the first draft and the final shipped shape, fixed in
+`a4f6e7e` + `f56fd64`; Codex found no actionable regressions). An earlier
+`/code-review` surfaced six findings; five fixed in `b5da8d8` (dead
+`ColorMode::default`, stale test clamp, "defense in depth" mis-claim,
+stage-4 color-capture clock race, missing composed test for plain-style +
+ripple gate), the sixth skipped as speculative about a non-linear decay
+model that doesn't exist.
+
 Turns the user's typing pace into a visual reward: a `0..=FEVER_MAX` (= 4.0)
 meter climbs on each press (`+0.15`), decays when idle (`-0.05/s`), and a
 successful `=` pauses decay for 2.5 s so reading the result doesn't cost
@@ -1071,3 +1082,14 @@ behind us. **`web-ratzilla` is the only remaining task.**
   not broken — but the always-on breath means `draw_web`'s closure never has an
   idle frame, so the "gate redraws on an effect being active" note in
   `rainbow-animation.md` matters more there than it does natively.
+
+  **Carry-forward from `fever-mode`:** `ui_state.rs` grew another always-on
+  clock (`fever_last_tick` + lazy decay via `apply_decay`, called from
+  `tick()`), so the web build's gate-redraws-on-change plan now has to let
+  "any press within the last 20 s" count as a reason to repaint — the meter
+  decays visibly between frames and the stage-4 hue phase cycles every 20 s.
+  All of the fever math is pure (`score_after_decay` / `decayed_with_grace`
+  / `next_stage` / `fever_fill_fraction`), no renderer dependency, so the
+  web port needs no changes to the math itself. `register_press_fever` and
+  `register_grace` plug into `activate`, which the extract-core-and-Msg
+  split will have to preserve as the single input funnel.
