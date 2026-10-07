@@ -46,12 +46,53 @@ const RIPPLE_DURATION: Duration = Duration::from_millis(800);
 /// it only when looking for it.
 const BREATH_PERIOD: Duration = Duration::from_millis(4200);
 
+/// How long one cycle of the stage-four fever meter's hue rotation takes.
+///
+/// Slower than [`BREATH_PERIOD`] because the breath is a tiny lightness nudge
+/// while this is a full 360° hue rotation — a 4 s hue cycle would turn the
+/// meter into a strobe. 20 s is slow enough to read as "always alive" without
+/// drawing the eye away from the expression itself.
+const FEVER_METER_PERIOD: Duration = Duration::from_secs(20);
+
 /// How long the hue drift takes to sweep the palette and settle back.
 ///
 /// Longer than the ripple: the ripple acknowledges a keystroke, while this marks
 /// a finished calculation, and a rotation fast enough to catch the eye would read
 /// as a glitch rather than a flourish.
 const DRIFT_DURATION: Duration = Duration::from_millis(1400);
+
+/// The top of the fever meter — the score is clamped to `0..=FEVER_MAX`, with
+/// each unit representing one stage. One unit = one stage keeps the climb and
+/// decay constants (`+0.15/press`, `-0.05/s`) reading as "per stage" rather
+/// than per-abstract-progress — a reader sees "20 s of idle decay loses one
+/// unit, which is one stage" with no mental scaling.
+const FEVER_MAX: f64 = 4.0;
+
+/// How much a single press adds to the fever meter, on the `0..=FEVER_MAX`
+/// scale. One press moves 15 % of a stage, so climbing a stage from zero
+/// takes about seven presses net of decay. Climb beats decay at any sustained
+/// rate above `FEVER_DECAY / FEVER_CLIMB` ≈ one press every 3 s — slow typing
+/// holds the meter, bursts climb it, and silence drains it. See
+/// `docs/tasks/fever-mode.md` for the full rate math.
+const FEVER_CLIMB: f64 = 0.15;
+
+/// How fast the fever meter decays when the user isn't typing, in `score`
+/// units per second. One unit is one stage, so 20 s of idle silence drops the
+/// meter by one stage (and the full ladder drains in `FEVER_MAX / FEVER_DECAY`
+/// = 80 s).
+const FEVER_DECAY: f64 = 0.05;
+
+/// How long decay is suppressed after a successful `=`, so a short reading pause
+/// right after a result doesn't cost altitude. Only fires on a *successful* `=`
+/// (the same `app.copy_text().is_some()` gate the hue drift uses).
+const FEVER_GRACE: Duration = Duration::from_millis(2500);
+
+/// Deadband around each stage threshold, to keep a score oscillating within a
+/// hair of a boundary from flapping back and forth between stages every tick.
+/// Promoting requires `score >= threshold + H`, demoting `score <= threshold - H`.
+/// 0.08 is 8 % of a stage — small enough to be imperceptible, large enough to
+/// swallow one-press-per-second-ish float noise around a threshold.
+const FEVER_HYSTERESIS: f64 = 0.08;
 
 /// What a transient visual effect *is*, plus whatever that kind of effect needs
 /// to know where it happened.
@@ -152,15 +193,19 @@ impl Effect {
     }
 }
 
-/// How the digits are colored. A **presentation-only** toggle — it changes no
-/// calculator state, so it lives on `UiState` (the rendering half), not `App`.
-/// `Rainbow` (each digit `0`–`9` its own hue on both the button grid and the
-/// display) is the default look; `Mono` is the plain fallback (see
+/// How the digits are colored. A **presentation-only** category — it changes
+/// no calculator state, so it lives on `UiState` (the rendering half), not
+/// `App`. `Rainbow` colors each digit `0`–`9` its own hue on both the button
+/// grid and the display; `Mono` is the plain fallback (see
 /// [`crate::ui::glyph_color`]).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+///
+/// Not stored on `UiState` any more — [`UiState::color_mode`] derives it
+/// from the active [`FeverStage`], so there is no `Default` impl: the
+/// startup color (Mono at stage One) is a property of fever, not of this
+/// enum.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ColorMode {
     Mono,
-    #[default]
     Rainbow,
 }
 
@@ -176,6 +221,119 @@ pub enum Theme {
     #[default]
     Dark,
     Light,
+}
+
+/// Which visual stage the fever meter is currently in. The user has no way to
+/// pick a stage directly — it is a function of the meter's score (climbed by
+/// typing, decayed by time) and of hysteresis around each threshold.
+///
+/// Each stage **adds** to the one below: One is plain-plain, Four is full
+/// rainbow + animation. The three predicate methods are the gates the renderer
+/// reads to decide what to show, and are named for what they enable so a
+/// caller doesn't have to know which stage number does what.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FeverStage {
+    /// Plain — no palette color, no animation. The press flash still fires
+    /// (that's input confirmation, not decoration). The startup default.
+    #[default]
+    One,
+    /// Mono highlights come alive: focus/press use the per-key palette color,
+    /// but animation is still off.
+    Two,
+    /// Animation unlocks: ripple on press and the always-on display breath.
+    /// Still mono digit coloring.
+    Three,
+    /// Full rainbow + the hue drift on a successful `=`. The top of the ladder.
+    Four,
+}
+
+impl FeverStage {
+    /// Whether button focus/press should use the per-key palette color
+    /// (today's mono styling). False only at stage One, where everything stays
+    /// uncolored.
+    pub fn colored_highlights(self) -> bool {
+        !matches!(self, FeverStage::One)
+    }
+
+    /// Whether decorative animations run — the press ripple and the display
+    /// breath. Press flash is **not** gated on this (it's input confirmation).
+    pub fn animated(self) -> bool {
+        matches!(self, FeverStage::Three | FeverStage::Four)
+    }
+
+    /// Whether per-digit rainbow coloring is on. Also gates the hue drift,
+    /// indirectly: a non-rainbow palette makes `palette_for` ignore the drift.
+    pub fn rainbow(self) -> bool {
+        matches!(self, FeverStage::Four)
+    }
+}
+
+/// Decay the fever meter by one interval of real time, clamped at zero.
+///
+/// Pure, so the exponent-free decay model and the floor are both testable
+/// without a clock. The lazy decay in `UiState::apply_decay` wraps this with the
+/// grace-remaining accounting; a caller that just wants "no grace active" calls
+/// this directly.
+fn score_after_decay(prev: f64, elapsed_secs: f64) -> f64 {
+    (prev - FEVER_DECAY * elapsed_secs).max(0.0)
+}
+
+/// Decay `prev` over `elapsed_secs`, with up to `grace_remaining_secs` of that
+/// interval covered by a reading-grace (no decay).
+///
+/// The grace is subtracted from the elapsed time *first*; the remainder decays
+/// at the normal rate. So a 1 s interval with 0.3 s grace remaining decays for
+/// 0.7 s; a 1 s interval with 2 s grace remaining decays for 0 s. Pure.
+fn decayed_with_grace(prev: f64, elapsed_secs: f64, grace_remaining_secs: f64) -> f64 {
+    let decay_time = (elapsed_secs - grace_remaining_secs).max(0.0);
+    score_after_decay(prev, decay_time)
+}
+
+/// The stage `score` belongs to when the previous stage was `current`.
+///
+/// Each stage occupies one unit on the `0..=FEVER_MAX` scale, with thresholds
+/// at `1.0 / 2.0 / 3.0`. Hysteresis: once in a stage, you leave it only when
+/// the score has crossed the boundary by `FEVER_HYSTERESIS`. Promoting
+/// requires the upper edge of the deadband; demoting requires the lower edge.
+/// Right at a threshold nothing moves. Pure and totally-matched over
+/// `FeverStage`.
+fn next_stage(current: FeverStage, score: f64) -> FeverStage {
+    use FeverStage::*;
+    const H: f64 = FEVER_HYSTERESIS;
+    match current {
+        One => {
+            if score >= 1.0 + H {
+                Two
+            } else {
+                One
+            }
+        }
+        Two => {
+            if score >= 2.0 + H {
+                Three
+            } else if score <= 1.0 - H {
+                One
+            } else {
+                Two
+            }
+        }
+        Three => {
+            if score >= 3.0 + H {
+                Four
+            } else if score <= 2.0 - H {
+                Two
+            } else {
+                Three
+            }
+        }
+        Four => {
+            if score <= 3.0 - H {
+                Three
+            } else {
+                Four
+            }
+        }
+    }
 }
 
 pub struct UiState {
@@ -214,12 +372,26 @@ pub struct UiState {
     // a TUI has no log, so this status line is the only place it can surface.
     // `None` when nothing is being shown; expired by `tick` after `STATUS_DURATION`.
     status: Option<(String, Instant)>,
-    // Per-digit rainbow (default) vs mono. Read by the renderer each draw; toggled
-    // by the `r` key, routed at the I/O boundary in `main.rs` like the pad switch.
-    color_mode: ColorMode,
     // Which background the palette is tuned for (dark by default). Affects both
     // modes — rainbow digit hues and mono highlight accents; toggled by the `t` key.
     theme: Theme,
+    // --- Fever state -----------------------------------------------------------
+    // A `0..=1` meter climbed by presses and decayed by time, with hysteresis
+    // around each stage threshold. The user doesn't pick a visual mode — it is
+    // *earned* by typing. See `register_press_fever` / `apply_decay` and the
+    // free `score_after_decay` / `next_stage` for the math.
+    fever_score: f64,
+    // The band `fever_score` sits in, cached so renderer reads don't recompute
+    // it on every call. Kept current by `tick` and by `register_press_fever`.
+    fever_stage: FeverStage,
+    // When the lazy decay was last applied. `Instant::now()` at startup; any
+    // decay interval is measured from this to `now` and this is then set to
+    // `now`. Private so a test can't forge a time delta.
+    fever_last_tick: Instant,
+    // `Some(t)` while a reading-grace (fired by a successful `=`) is still in
+    // effect: decay skips any part of an interval up to `t`. `None` means no
+    // active grace. Cleared by `apply_decay` once `t` is in the past.
+    reading_grace_until: Option<Instant>,
     // Quick-input mode: while on, the home-row keys enter digits/operators (see
     // `action::QUICK_MAP`) instead of navigating, and each mapped button shows its
     // key in the border. Entered with `i` and left with `Esc`, both routed in
@@ -236,6 +408,11 @@ impl UiState {
         let layouts = vec![Keypad::standard(), Keypad::tall(), Keypad::wide()];
         let focus = layouts[0].default_focus();
         let button_rects = vec![Rect::ZERO; layouts[0].button_count()];
+        // One `Instant::now()` call shared across every clock-origin field, so
+        // tests that register a press immediately after construction see the
+        // minimum possible decay interval rather than two independent calls'
+        // worth of microseconds between them.
+        let now = Instant::now();
         Self {
             layouts,
             layout: 0,
@@ -243,13 +420,16 @@ impl UiState {
             term_size: (0, 0),
             focus,
             effects: Vec::new(),
-            animation_start: Instant::now(),
+            animation_start: now,
             button_rects,
             copy_rect: Rect::ZERO,
             status: None,
-            color_mode: ColorMode::default(),
             theme: Theme::default(),
             quick_mode: false,
+            fever_score: 0.0,
+            fever_stage: FeverStage::One,
+            fever_last_tick: now,
+            reading_grace_until: None,
         }
     }
 
@@ -266,20 +446,99 @@ impl UiState {
         self.quick_mode
     }
 
-    /// Flip between mono and rainbow coloring. Routed from the `r` key in
-    /// `main.rs` (like the pad switch and copy), *not* through the `Action` enum:
-    /// coloring is a rendering concern that transforms no calculator state.
-    pub fn toggle_color_mode(&mut self) {
-        self.color_mode = match self.color_mode {
-            ColorMode::Mono => ColorMode::Rainbow,
-            ColorMode::Rainbow => ColorMode::Mono,
-        };
+    /// The active color mode, **derived** from the fever stage: only stage Four
+    /// is rainbow, every other stage is mono. There is no manual override —
+    /// fever replaces what `r` used to do. The renderer reads this to pick
+    /// between the mono and rainbow render paths.
+    pub fn color_mode(&self) -> ColorMode {
+        if self.fever_stage == FeverStage::Four {
+            ColorMode::Rainbow
+        } else {
+            ColorMode::Mono
+        }
     }
 
-    /// The active color mode; the renderer reads it to decide whether to color
-    /// digits. `Copy`, so callers hold a value rather than borrowing `self`.
-    pub fn color_mode(&self) -> ColorMode {
-        self.color_mode
+    /// The active fever stage, snapped through hysteresis around the thresholds.
+    /// `Copy`, so callers can hold it while mutably borrowing `self` elsewhere.
+    /// Read by the renderer to decide what visual elements to show (see
+    /// [`FeverStage::colored_highlights`] / [`animated`][FeverStage::animated] /
+    /// [`rainbow`][FeverStage::rainbow]).
+    pub fn stage(&self) -> FeverStage {
+        self.fever_stage
+    }
+
+    /// The current fever meter score, on `0..=FEVER_MAX` (one unit per
+    /// stage). Test-only: production renders through
+    /// [`fever_fill_fraction`](Self::fever_fill_fraction), which hides the
+    /// internal scale. Exposed here so cross-module tests can print the raw
+    /// score in panic messages without reaching into the private field.
+    #[cfg(test)]
+    pub fn fever_score(&self) -> f64 {
+        self.fever_score
+    }
+
+    /// The fraction of the meter's width to fill with the **current** stage's
+    /// color, `0..=1`. **Per-stage**, not overall: each stage drives the
+    /// meter 0 → 100 % of width (one unit on the `0..=FEVER_MAX` score, so
+    /// `(score - lower_threshold_of_stage)` already lives on `0..=1`).
+    ///
+    /// Hysteresis is honoured by using the *cached* stage: when the score has
+    /// crept past a threshold but the stage hasn't flipped yet, this stays
+    /// clamped at `1.0`, matching the stage that's still cached. The jump at
+    /// the threshold crossing coincides with the effect-gating flip, so the
+    /// whole UI moves together.
+    pub fn fever_fill_fraction(&self) -> f64 {
+        let lower = match self.fever_stage {
+            FeverStage::One => 0.0,
+            FeverStage::Two => 1.0,
+            FeverStage::Three => 2.0,
+            FeverStage::Four => 3.0,
+        };
+        (self.fever_score - lower).clamp(0.0, 1.0)
+    }
+
+    /// Bump the fever meter for a successful input event. Called from
+    /// `activate` *after* `register_press`, since the flash and ripple are
+    /// their own concern. Catches up any outstanding decay first so an
+    /// occasional press after a long idle doesn't eat its own climb.
+    pub fn register_press_fever(&mut self) {
+        let now = Instant::now();
+        self.apply_decay(now);
+        self.fever_score = (self.fever_score + FEVER_CLIMB).min(FEVER_MAX);
+        self.fever_stage = next_stage(self.fever_stage, self.fever_score);
+    }
+
+    /// Start a reading-grace window: for the next [`FEVER_GRACE`] no decay
+    /// applies, so a short pause after seeing a result doesn't cost altitude.
+    /// Called from `activate` on a *successful* `=` (the existing
+    /// `app.copy_text().is_some()` gate — same as the hue drift).
+    pub fn register_grace(&mut self) {
+        self.reading_grace_until = Some(Instant::now() + FEVER_GRACE);
+    }
+
+    /// Apply any outstanding decay since the last tick, bringing `fever_score`
+    /// (and the cached stage) up to `now`. The reading-grace, if active, is
+    /// subtracted from the decay interval first — see
+    /// [`decayed_with_grace`]. Called by `tick` once per draw iteration and by
+    /// `register_press_fever` right before it climbs.
+    fn apply_decay(&mut self, now: Instant) {
+        // Grace remaining as of the previous tick: zero unless a grace was
+        // active *then*. If `grace_until` has drifted into the past since the
+        // last tick, the grace covered part of this interval, which the pure
+        // helper handles via subtraction.
+        let grace_remaining = match self.reading_grace_until {
+            Some(g) if g > self.fever_last_tick => (g - self.fever_last_tick).as_secs_f64(),
+            _ => 0.0,
+        };
+        let elapsed = now.duration_since(self.fever_last_tick).as_secs_f64();
+        self.fever_score = decayed_with_grace(self.fever_score, elapsed, grace_remaining);
+        self.fever_last_tick = now;
+        if let Some(g) = self.reading_grace_until
+            && g <= now
+        {
+            self.reading_grace_until = None;
+        }
+        self.fever_stage = next_stage(self.fever_stage, self.fever_score);
     }
 
     /// Flip the palette between its dark- and light-background tunings. Routed from
@@ -487,6 +746,15 @@ impl UiState {
         (self.animation_start.elapsed().as_secs_f32() / period).fract()
     }
 
+    /// A free-running `0.0..1.0` phase for the stage-four fever meter's hue
+    /// rotation, cycling every [`FEVER_METER_PERIOD`]. Only meaningful at
+    /// stage four — the renderer gates on `stage().rainbow()` before reading
+    /// it.
+    pub fn fever_meter_hue_phase(&self) -> f32 {
+        let period = FEVER_METER_PERIOD.as_secs_f32();
+        (self.animation_start.elapsed().as_secs_f32() / period).fract()
+    }
+
     /// Record the screen rect of every button. Called by the UI once per draw so
     /// `button_at` can hit-test the *current* layout (the panel is re-centered on
     /// resize, so last frame's rects are the truth for the next mouse event).
@@ -541,8 +809,10 @@ impl UiState {
     }
 
     /// Expire finished effects and the status message once each has been visible
-    /// for its duration. Called once per run-loop iteration before drawing.
+    /// for its duration, and apply any outstanding fever-meter decay. Called
+    /// once per run-loop iteration before drawing.
     pub fn tick(&mut self) {
+        self.apply_decay(Instant::now());
         self.effects.retain(|e| !e.is_expired());
         if let Some((_, at)) = self.status
             && at.elapsed() >= STATUS_DURATION
@@ -990,13 +1260,26 @@ mod tests {
     }
 
     #[test]
-    fn toggle_color_mode_flips_and_round_trips() {
-        // Starts rainbow (the default); each press flips, so two presses return to it.
+    fn color_mode_is_mono_until_fever_hits_stage_four() {
+        // There is no manual `r` toggle any more: rainbow is reserved for the
+        // top of the fever ladder. A fresh UiState sits at stage One (score 0),
+        // so it reads as mono until the meter is climbed into stage Four.
         let mut ui = UiState::new();
-        assert_eq!(ui.color_mode(), ColorMode::Rainbow);
-        ui.toggle_color_mode();
+        assert_eq!(ui.stage(), FeverStage::One);
         assert_eq!(ui.color_mode(), ColorMode::Mono);
-        ui.toggle_color_mode();
+        // Scores inside stages Two and Three are still mono. Each stage spans
+        // one unit on the `0..=FEVER_MAX` scale, so 1.5 is firmly in Two and
+        // 2.5 firmly in Three.
+        for score in [1.5, 2.5] {
+            ui.fever_score = score;
+            ui.fever_stage = next_stage(ui.fever_stage, score);
+            assert_eq!(ui.color_mode(), ColorMode::Mono, "stage {:?}", ui.stage());
+        }
+        // At stage Four the derivation flips to rainbow (3.5 is past the 3.08
+        // upper-hysteresis edge).
+        ui.fever_score = 3.5;
+        ui.fever_stage = next_stage(ui.fever_stage, 3.5);
+        assert_eq!(ui.stage(), FeverStage::Four);
         assert_eq!(ui.color_mode(), ColorMode::Rainbow);
     }
 
@@ -1034,5 +1317,219 @@ mod tests {
         ui.register_press("5");
         ui.tick();
         assert_eq!(ui.flash_cell(), Some((2, 1)));
+    }
+
+    // --- Fever math ------------------------------------------------------------
+
+    #[test]
+    fn score_after_decay_falls_at_the_configured_rate() {
+        // One second removes exactly `FEVER_DECAY` from the score — the
+        // mechanism's one tunable rate.
+        assert!((score_after_decay(1.0, 1.0) - (1.0 - FEVER_DECAY)).abs() < 1e-9);
+        assert!((score_after_decay(0.5, 2.0) - (0.5 - 2.0 * FEVER_DECAY)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn score_after_decay_clamps_at_zero() {
+        // A long enough interval doesn't drive the score negative — the meter
+        // bottoms out at zero and stays there. This is the floor the
+        // render-time geometry (bottom border fill width) relies on.
+        assert_eq!(score_after_decay(0.1, 10.0), 0.0);
+        assert_eq!(score_after_decay(0.0, 10.0), 0.0);
+    }
+
+    #[test]
+    fn decayed_with_grace_covers_the_whole_interval() {
+        // Grace that spans the whole elapsed window means no decay: an idle
+        // 2 s immediately after `=` with ≥ 2 s of grace left is a free pause.
+        assert_eq!(decayed_with_grace(1.0, 2.0, 2.5), 1.0);
+        assert_eq!(decayed_with_grace(0.5, 1.0, 10.0), 0.5);
+    }
+
+    #[test]
+    fn decayed_with_grace_decays_only_the_post_grace_portion() {
+        // Grace that expires mid-window: decay runs for `elapsed - grace`
+        // seconds, no more. 3 s elapsed with 1 s grace remaining decays for 2 s.
+        let got = decayed_with_grace(1.0, 3.0, 1.0);
+        let want = 1.0 - 2.0 * FEVER_DECAY;
+        assert!((got - want).abs() < 1e-9, "got {got}, want {want}");
+    }
+
+    #[test]
+    fn decayed_with_grace_without_a_grace_matches_plain_decay() {
+        // No grace active (`grace_remaining = 0`) must be identical to
+        // `score_after_decay` — the two helpers compose, they don't disagree.
+        for elapsed in [0.0, 0.5, 1.5, 10.0] {
+            assert_eq!(
+                decayed_with_grace(0.8, elapsed, 0.0),
+                score_after_decay(0.8, elapsed),
+                "elapsed {elapsed}"
+            );
+        }
+    }
+
+    #[test]
+    fn next_stage_climbs_at_the_upper_hysteresis_edge() {
+        // Promoting requires `score >= threshold + FEVER_HYSTERESIS`. The
+        // exact boundary (1.0) holds; just over the edge (1.09 with H=0.08)
+        // crosses. The thresholds are 1.0/2.0/3.0 on the `0..=FEVER_MAX` scale.
+        assert_eq!(next_stage(FeverStage::One, 1.0), FeverStage::One);
+        assert_eq!(next_stage(FeverStage::One, 1.07), FeverStage::One);
+        assert_eq!(next_stage(FeverStage::One, 1.09), FeverStage::Two);
+        assert_eq!(next_stage(FeverStage::Two, 2.09), FeverStage::Three);
+        assert_eq!(next_stage(FeverStage::Three, 3.09), FeverStage::Four);
+    }
+
+    #[test]
+    fn next_stage_falls_at_the_lower_hysteresis_edge() {
+        // Demoting requires `score <= threshold - FEVER_HYSTERESIS`. Mirror of
+        // the climb test — the deadband keeps the stage from flapping on either
+        // side of a threshold.
+        assert_eq!(next_stage(FeverStage::Two, 0.91), FeverStage::One);
+        assert_eq!(next_stage(FeverStage::Two, 0.93), FeverStage::Two);
+        assert_eq!(next_stage(FeverStage::Three, 1.91), FeverStage::Two);
+        assert_eq!(next_stage(FeverStage::Four, 2.91), FeverStage::Three);
+    }
+
+    #[test]
+    fn next_stage_holds_within_the_hysteresis_band() {
+        // Right in the deadband around each threshold, every stage holds.
+        // Hysteresis at ±0.08 around 1.0 means [0.92, 1.08] is the "no
+        // movement" window — a score hovering there must not flap between
+        // adjacent stages every tick.
+        for score in [0.95, 1.0, 1.05] {
+            assert_eq!(next_stage(FeverStage::One, score), FeverStage::One);
+            assert_eq!(next_stage(FeverStage::Two, score), FeverStage::Two);
+        }
+    }
+
+    #[test]
+    fn fever_startup_is_stage_one_with_zero_score() {
+        // The user hasn't typed anything yet, so the ladder is at its bottom —
+        // plain-plain, no color, no animation. This is the only startup state;
+        // the renderer tests downstream can rely on it.
+        let ui = UiState::new();
+        assert_eq!(ui.stage(), FeverStage::One);
+        assert_eq!(ui.fever_score(), 0.0);
+        assert_eq!(ui.color_mode(), ColorMode::Mono);
+    }
+
+    #[test]
+    fn register_press_fever_climbs_the_score() {
+        // Each press adds `FEVER_CLIMB` (modulo an immeasurable sliver of
+        // decay since construction). After `n` presses the score is within an
+        // epsilon of `n * FEVER_CLIMB`, so the test tolerates the real-clock
+        // decay without relying on it being zero. Clamp against `FEVER_MAX`
+        // so the expectation stays correct if the loop ever runs long enough
+        // to saturate.
+        let mut ui = UiState::new();
+        for n in 1..=5 {
+            ui.register_press_fever();
+            let expected = (n as f64 * FEVER_CLIMB).min(FEVER_MAX);
+            let got = ui.fever_score();
+            assert!(
+                (got - expected).abs() < 0.01,
+                "press {n}: got {got}, want ~{expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn fever_climbs_through_the_full_ladder() {
+        // Reaching stage Four requires passing the 3.08 upper-hysteresis
+        // edge; at `+0.15/press` and ~zero decay between back-to-back presses,
+        // that's about 21 presses (3.08 / 0.15 ≈ 20.5). Thirty is comfortably
+        // past, which lets the test tolerate a stray microsecond of decay
+        // without flaking.
+        let mut ui = UiState::new();
+        assert_eq!(ui.stage(), FeverStage::One);
+        for _ in 0..30 {
+            ui.register_press_fever();
+        }
+        assert_eq!(ui.stage(), FeverStage::Four);
+        assert_eq!(ui.color_mode(), ColorMode::Rainbow); // and rainbow unlocks
+    }
+
+    #[test]
+    fn fever_fill_fraction_resets_at_each_stage_boundary() {
+        // Per-stage geometry: each stage drives the fraction 0 → 1 and then
+        // resets. At the mid-point of each stage, the fraction is ~0.5
+        // regardless of which stage we're in. Score and cached stage are
+        // forced in sync directly here; in production `apply_decay` keeps
+        // them consistent on its own.
+        let mut ui = UiState::new();
+        for (score, stage) in [
+            (0.5, FeverStage::One),
+            (1.5, FeverStage::Two),
+            (2.5, FeverStage::Three),
+            (3.5, FeverStage::Four),
+        ] {
+            ui.fever_score = score;
+            ui.fever_stage = stage;
+            let fraction = ui.fever_fill_fraction();
+            assert!(
+                (fraction - 0.5).abs() < 1e-9,
+                "stage {stage:?} at score {score}: fraction {fraction} ≠ 0.5"
+            );
+        }
+    }
+
+    #[test]
+    fn fever_fill_fraction_clamps_within_hysteresis_band() {
+        // When the raw score has crept past a threshold but the cached stage
+        // hasn't flipped yet (hysteresis still holding), the fill fraction
+        // for that stage clamps at 1.0 rather than racing ahead of the
+        // stage. Same shape on the other end: a score briefly below the
+        // lower edge of the deadband (before the demote fires) still reads
+        // as the cached stage at fraction 0.
+        let mut ui = UiState::new();
+        // Score 1.05 is past the stage-1 upper boundary (1.0) but not past
+        // its upper hysteresis edge (1.08), so stage is still One.
+        ui.fever_score = 1.05;
+        ui.fever_stage = FeverStage::One;
+        assert_eq!(ui.fever_fill_fraction(), 1.0);
+        // Mirror on the demote side: score 0.95 after being in stage Two.
+        ui.fever_score = 0.95;
+        ui.fever_stage = FeverStage::Two;
+        assert_eq!(ui.fever_fill_fraction(), 0.0);
+    }
+
+    #[test]
+    fn register_grace_suppresses_decay_in_the_grace_window() {
+        // After `register_grace`, `apply_decay` must leave the score alone for
+        // the first `FEVER_GRACE` of real time. Driven through the private
+        // helper with a hand-picked `now` so the test doesn't need a sleep.
+        //
+        // The grace end is pinned to `fever_last_tick + FEVER_GRACE` directly
+        // (rather than via `register_grace`, which would call `Instant::now()`
+        // a few microseconds past the one `new()` captured) so the arithmetic
+        // below lines up exactly on the grace boundary.
+        let mut ui = UiState::new();
+        // Pick a score sitting comfortably in stage Three (score 2.5 on the
+        // 0..=4 scale) so the decay math moves it visibly without hitting
+        // either bound of the meter.
+        ui.fever_score = 2.5;
+        let start = ui.fever_last_tick;
+        ui.reading_grace_until = Some(start + FEVER_GRACE);
+        // Simulate one second passing *inside* the grace window.
+        ui.apply_decay(start + Duration::from_secs(1));
+        assert!(
+            (ui.fever_score - 2.5).abs() < 1e-9,
+            "grace must freeze the meter; got {}",
+            ui.fever_score
+        );
+        // Now 3 s past the start — grace expired at 2.5 s, so decay runs for
+        // the remaining 0.5 s only.
+        ui.apply_decay(start + Duration::from_secs(3));
+        let want = 2.5 - 0.5 * FEVER_DECAY;
+        assert!(
+            (ui.fever_score - want).abs() < 1e-9,
+            "post-grace decay wrong; got {}, want {want}",
+            ui.fever_score
+        );
+        assert!(
+            ui.reading_grace_until.is_none(),
+            "expired grace must be cleared"
+        );
     }
 }

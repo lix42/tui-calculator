@@ -887,12 +887,177 @@ one-line change is to `retain` the global `Drift` in `start_effects`.
   live ripples and append up to a cap.
 - No user-facing keys changed, so `README.md` needed no update.
 
+## fever-mode — `src/ui_state.rs`, `src/ui.rs`, `src/main.rs`
+
+**Shipped** 2026-10-06 as PR #25 (branch `fever-mode`). 180 tests pass;
+`cargo fmt`, `cargo clippy`, `cargo clippy --tests` clean. Followed the
+`/ship:ship` workflow; two reviewers ran (ship diff-reviewer surfaced doc
+drift between the first draft and the final shipped shape, fixed in
+`a4f6e7e` + `f56fd64`; Codex found no actionable regressions). An earlier
+`/code-review` surfaced six findings; five fixed in `b5da8d8` (dead
+`ColorMode::default`, stale test clamp, "defense in depth" mis-claim,
+stage-4 color-capture clock race, missing composed test for plain-style +
+ripple gate), the sixth skipped as speculative about a non-linear decay
+model that doesn't exist.
+
+Turns the user's typing pace into a visual reward: a `0..=FEVER_MAX` (= 4.0)
+meter climbs on each press (`+0.15`), decays when idle (`-0.05/s`), and a
+successful `=` pauses decay for 2.5 s so reading the result doesn't cost
+altitude. Four stages (`FeverStage::One..Four`) snap at `1.0 / 2.0 / 3.0`
+thresholds with `±0.08` hysteresis — one unit per stage, so the climb and
+decay constants read as "per-stage" rather than against an abstract
+progress bar. Each stage enables more of the UI: `One` is plain (no palette
+color, no animation), `Two` turns colored mono highlights on, `Three` adds
+ripple + display breath, `Four` is full rainbow + hue drift. The meter *is*
+the display box's bottom border — **per-stage geometry**, each stage drives
+the fill 0 → 100 % of width in its own color, with the previous stage's
+color persisting as a base layer on the left and a one-cell `<` marker at
+the boundary. Stages 1-3 are three grays (dim / medium / bright, moving away
+from the background per theme); stage 4 is a slowly-rotating hue — grays
+below the top so stage 4's drift is the one place color appears.
+
+**Replaces `r`.** The `r`/`R` toggle for `ColorMode` is gone; `color_mode()` is
+now derived from stage, and `ColorMode` the enum stays as the renderer's
+internal view only. `t` (theme) stays as a user preference, orthogonal to fever.
+**Paste is intentionally outside fever.** `Event::Paste` routes to
+`App::apply_str`, which never calls `activate` — so pasting `78-65*5=` neither
+climbs the meter nor fires the reading grace. Paste is one logical edit, and
+one edit is one press's worth of climb at most; the fever mechanic is tied to
+*typing* pace, not keyboard-independent input.
+
+### What landed where
+
+- **`ui_state.rs`** — `FeverStage` enum with three predicate methods
+  (`colored_highlights`, `animated`, `rainbow`), four new fields on `UiState`
+  (`fever_score`, `fever_stage`, `fever_last_tick`, `reading_grace_until`),
+  three pure helpers (`score_after_decay`, `decayed_with_grace`, `next_stage`),
+  and the lazy-decay machinery (`apply_decay` private + `register_press_fever`
+  + `register_grace`). `tick()` catches up outstanding decay before every draw.
+  `fever_meter_hue_phase()` is the stage-Four meter's free-running 20 s clock,
+  parallel to `breath_phase()`.
+- **`main.rs`** — `activate` fires `register_press_fever` after
+  `register_press`; a successful `=` fires `register_drift` *and*
+  `register_grace`. The `r`/`R` branch is deleted. A new test asserts `r` is
+  now inert.
+- **`ui.rs`** — `draw_display` gates the breath on `stage.animated()` and
+  overlays the fever meter on the bottom border (`draw_fever_meter` renders
+  three regions: previous-stage base, `<` marker, current-stage fill — colors
+  resolved through `fever_meter_color` / `base_meter_color` / `stage_meter_color`,
+  with `meter_gray(theme, GrayLevel)` for stages 1-3 and `stage_four_meter`
+  for the drifting hue). `draw_buttons` gates ripple extraction on
+  `stage.animated()` so stages 1-2 short-circuit before touching `effects`.
+  `draw_button` dispatches to a new `plain_style` at stage 1
+  (`BorderType::Thick` on focus, `REVERSED` on press, no palette color
+  anywhere). `frame_palette` gates the drift on `stage.rainbow()`;
+  `palette_for` also refuses to drift under `ColorMode::Mono` as part of its
+  own contract (the two checks are tautologically equivalent since
+  `color_mode()` is derived from `stage == Four`, so they can't disagree — the
+  second is `palette_for`'s own property, not a backstop).
+
+### Decisions worth preserving
+
+- **Press flash stays always on.** It is input confirmation, not decoration —
+  gating it would make a terminal with any input lag unusable at low stages.
+  The `plain_style` press branch uses `Modifier::REVERSED` (no explicit color,
+  so the Light theme is covered for free; `loud`/`knockout` would have been a
+  trap here).
+- **Effects fire unconditionally, render conditionally.** `register_press`
+  still inserts both `Press` and `Ripple` into `effects` at every stage;
+  `register_drift` still inserts `Drift` on every successful `=`. The data
+  model stays untouched — only the renderer branches on stage. This keeps
+  tests that assert on `effects()` membership green (e.g.
+  `drift_fires_only_on_a_successful_evaluation`) and lets a late stage climb
+  pick up effects already in flight.
+- **No stage-up celebration flash.** The meter's color/length change *is* the
+  signal. If a one-off tell proves wanted, it's a cheap retrofit: one
+  `start_effects` call with a `Ripple { cell: meter_cell }`.
+- **"Visible meter" without an extra widget.** The display box already has a
+  bottom border; `draw_fever_meter` is a *post-render overlay* that only
+  recolors specific cells' `fg` via `frame.buffer_mut()[(x, y)].set_fg(...)`.
+  Zero extra layout space, and the `╰───╯` characters already drawn carry the
+  meter.
+- **Lazy decay, not a timer.** The meter is advanced only when `tick` runs or
+  `register_press_fever` is called — never from a background thread. The run
+  loop's 100 ms repaint cadence paces decay naturally, and the pure helpers
+  mean every tune-knob is unit-testable without a sleep.
+
+### Test coverage
+
+- Pure math: `score_after_decay` (rate + zero floor), `decayed_with_grace`
+  (whole-interval pause + partial pause + no-grace equivalence to plain
+  decay), `next_stage` (climbs at upper edge of hysteresis, falls at lower
+  edge, holds in deadband around each of `1.0 / 2.0 / 3.0`).
+- State: startup is `(One, 0.0, Mono)`; `register_press_fever` climbs by
+  `FEVER_CLIMB`; 30 presses reach `Four` (one unit per stage); `register_grace`
+  + manual `apply_decay(now)` freezes the score and then decays only the
+  post-grace portion. Grace boundary pinned to `fever_last_tick + FEVER_GRACE`
+  directly to sidestep the `Instant::now()` micro-slip between `new()` and
+  the call. `fever_fill_fraction` resets at each stage boundary and clamps
+  within the hysteresis band.
+- Rendering (TestBackend at 28×29): the meter's whole bottom row is erased
+  (space characters) at startup — "no bottom border" at score 0;
+  stage-Two renders both the stage-1 base and the stage-2 current layers;
+  stage-Three shows the `<` marker at the layer boundary;
+  stage-Four's whole border shares a single hue (test asserts uniformity, not
+  a specific color — stage 4's `fever_meter_hue_phase` is a real-time clock
+  that would race `fever_meter_color()` with `render()`);
+  `plain_style` sets no palette color at stage One;
+  the display border carries no breath fg below stage Three;
+  and `stage_one_button_borders_stay_uncolored_after_a_press` fires a press
+  (which inserts a `Ripple` effect in `effects` at any stage) and asserts
+  the adjacent button's border stays uncolored — defends the `view.ripple = 0.0`
+  gate at `draw_buttons` against regression.
+- Integration: `r_key_is_inert_after_fever_took_over` guards the removal.
+  `drift_is_rainbow_only_but_the_theme_still_applies` reaches mono through
+  the fresh-UiState default (stage One) rather than the deleted toggle.
+
+### Carry-forwards
+
+- **README has new content, not just a column drop.** The keys table loses
+  `r` and gains a whole Fever section with the four-stage table and the rate
+  math. The feature bullet changed from "per-digit rainbow coloring" to
+  "fever mode". This is exactly the pattern CLAUDE.md warns about — README
+  drift is cheap to introduce, so the whole feature-set description must
+  land with every keymap change.
+- **The three meter knobs** are `meter_gray`'s per-theme lightness tiers
+  (Dark: 50/70/92, Light: 55/32/10), `stage_four_meter`'s saturation+lightness
+  (from `theme_sl`), and `FEVER_METER_PERIOD` (20 s). All picked by taste; a
+  playtest-driven tweak would most likely nudge the Dim/Medium separation on
+  the Dark theme (50→55 would be a modest "stage 1 reads brighter" nudge).
+- **`+0.15/press` is a 15 % climb *per stage*.** The score runs on `0..=4`
+  (one unit per stage), not `0..=1` — the first implementation used a 0..1
+  scale and the climb felt too fast (one press was 60 % of a stage), so the
+  internal score was rescaled to 0..4 while the constants stayed. 10 presses
+  in 15 s now net `+0.75` of one stage — a burst climbs noticeably but
+  doesn't skip.
+
+- **Meter geometry is per-stage, not overall.** The first visual pass filled
+  the whole bar from `score / FEVER_MAX` and recolored it per stage; the
+  stage-1 band (0..25 %) was impossible to distinguish from the resting
+  foreground, and only four cells of real estate landed on the stage you
+  were actually in. Rewritten so each stage drives its own 0 → 100 % fill in
+  its own color (`fever_fill_fraction` now returns sub-stage progress). The
+  previous stage's color stays as a base layer on the left; the current
+  stage's color overlays from the right; a one-cell `<` marker sits at the
+  layer boundary — the three stage grays are intentionally close in
+  lightness, so the marker is what carries the "here's the current head"
+  signal without relying on fine color discrimination. At score 0 the bottom
+  border is literally erased (space characters) because "below stage 1"
+  layer is nothing.
+
+- **Grayscale 1-3, hue only at 4.** An earlier draft used a warm orange hue
+  for stage 3; it collided with stage 4's drifting rainbow whenever the
+  drift rotated near orange. Three grays (dim / medium / bright, each one
+  step further from the background per theme — same `loud`/`knockout`/
+  ripple/breath convention) sidestep the conflict and give stage 4 the only
+  color-carrying slot. Grays mean the three stage colors are hard to tell
+  apart on their own, which is exactly what the `<` marker exists to
+  compensate for.
+
 ## Next Task
 
-Every feature task is now done — the layout arc (`layout-config` →
-`layout-registry` → `layout-auto`), `focus-per-button`, `rainbow-mode` (static
-pass), `quick-input`, and `rainbow-animation` (2026-09-20). **`web-ratzilla` is
-the only task left.**
+With fever-mode shipped, the layout arc + rainbow pass + fever pass are all
+behind us. **`web-ratzilla` is the only remaining task.**
 
 - **`web-ratzilla`** — Ratzilla WASM build + Cloudflare Pages deploy. Known gaps:
   event-loop inversion → a `Msg` enum (see the deferred note above — this is the
@@ -917,3 +1082,14 @@ the only task left.**
   not broken — but the always-on breath means `draw_web`'s closure never has an
   idle frame, so the "gate redraws on an effect being active" note in
   `rainbow-animation.md` matters more there than it does natively.
+
+  **Carry-forward from `fever-mode`:** `ui_state.rs` grew another always-on
+  clock (`fever_last_tick` + lazy decay via `apply_decay`, called from
+  `tick()`), so the web build's gate-redraws-on-change plan now has to let
+  "any press within the last 20 s" count as a reason to repaint — the meter
+  decays visibly between frames and the stage-4 hue phase cycles every 20 s.
+  All of the fever math is pure (`score_after_decay` / `decayed_with_grace`
+  / `next_stage` / `fever_fill_fraction`), no renderer dependency, so the
+  web port needs no changes to the math itself. `register_press_fever` and
+  `register_grace` plug into `activate`, which the extract-core-and-Msg
+  split will have to preserve as the single input funnel.

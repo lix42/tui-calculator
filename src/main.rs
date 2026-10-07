@@ -199,12 +199,9 @@ fn handle_event(event: Event, app: &mut App, ui: &mut UiState) {
             // selection for the current terminal size. The counterpart to Tab:
             // Tab pins, `a` un-pins.
             KeyCode::Char('a') | KeyCode::Char('A') => ui.resume_auto(),
-            // Toggle per-digit rainbow coloring. Like the pad switch, it's a
-            // rendering-only side effect (no calculator state changes), so it's
-            // routed here at the I/O boundary rather than through an `Action`.
-            KeyCode::Char('r') | KeyCode::Char('R') => ui.toggle_color_mode(),
             // Switch the rainbow palette between dark- and light-background
-            // tunings. Rendering-only, like the rainbow toggle above.
+            // tunings. Rendering-only, like the pad switch. (The old `r` toggle
+            // for mono/rainbow has been removed — fever stage drives that now.)
             KeyCode::Char('t') | KeyCode::Char('T') => ui.toggle_theme(),
             // Copy the result to the clipboard (vim-style yank; Ctrl-C is taken
             // by quit in raw mode). A no-op unless a result is on screen.
@@ -241,16 +238,24 @@ fn activate(app: &mut App, ui: &mut UiState, action: Action) {
     ui.clear_status();
     app.apply(action);
     ui.register_press(action.label());
-    // A *successful* evaluation additionally sweeps the palette. `copy_text` is
-    // the existing "is there a result?" question — it is `Some` only in
-    // `Mode::Evaluated`, so a syntax error or an `=` on an empty expression
-    // leaves the colors alone, and the effect can't claim a success that didn't
-    // happen. Read-only, so nothing leaks back into `App`.
+    // Fever climb: every activation bumps the meter. `register_press_fever`
+    // catches up any outstanding decay first, so an occasional press after a
+    // long idle doesn't eat its own climb into the decay interval. Ordered
+    // after `register_press` for symmetry with `register_drift` below (both
+    // are side effects of the same trigger).
+    ui.register_press_fever();
+    // A *successful* evaluation additionally sweeps the palette and starts a
+    // reading-grace on the fever meter. `copy_text` is the existing "is there
+    // a result?" question — `Some` only in `Mode::Evaluated`, so a syntax error
+    // or an `=` on an empty expression leaves everything alone, and neither
+    // effect can claim a success that didn't happen. Read-only, so nothing
+    // leaks back into `App`.
     //
     // Ordered *after* `register_press`, which clears the previous trigger's
     // effects: the flash, the ripple and the drift all belong to this one press.
     if matches!(action, Action::Equals) && app.copy_text().is_some() {
         ui.register_drift();
+        ui.register_grace();
     }
 }
 
@@ -497,18 +502,21 @@ mod tests {
     }
 
     #[test]
-    fn r_key_toggles_color_mode() {
-        // `r` is routed to the rainbow toggle here, not through an Action.
+    fn r_key_is_inert_after_fever_took_over() {
+        // The `r` toggle used to flip mono/rainbow. Fever stage drives that
+        // now, so `r` should fall through as an unmapped key — not navigate,
+        // not quit, not somehow still re-color.
         use ui_state::ColorMode;
         let mut app = App::new();
         let mut ui = UiState::new();
-        assert_eq!(ui.color_mode(), ColorMode::Rainbow); // rainbow is the default
+        assert_eq!(ui.color_mode(), ColorMode::Mono); // startup: stage One = mono
         handle_event(
             Event::Key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE)),
             &mut app,
             &mut ui,
         );
-        assert_eq!(ui.color_mode(), ColorMode::Mono);
+        assert_eq!(ui.color_mode(), ColorMode::Mono); // unchanged
+        assert!(!app.should_quit); // and no stray quit
     }
 
     #[test]
