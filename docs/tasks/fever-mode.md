@@ -1,5 +1,15 @@
 # fever-mode: Typing-Driven Four-Stage Visual Ladder
 
+> **Shipped shape.** The score runs on `0..=FEVER_MAX` (= 4.0), one unit per
+> stage — the pre-implementation draft below assumed a `0..=1` meter with
+> stages spanning 0.25 each. Thresholds landed at `1 / 2 / 3`, hysteresis at
+> `±0.08`, and the meter geometry is **per-stage** (each stage drives the
+> fill 0 → 100 % in its own color, previous stage's color visible on the
+> left as a base layer, `<` marker at the boundary). Stages 1-3 use three
+> grays (dim / medium / bright); stage 4 is a slowly-rotating hue. See the
+> "Meter rendering" section further down for the final design, and the
+> fever-mode entry in `docs/progress.md` for the implementation walk-through.
+
 ## Goal
 
 Turn the user's typing pace into a visual reward: as they type, a meter climbs
@@ -7,7 +17,9 @@ through four discrete stages, each enabling more of the UI's visual repertoire.
 Idle time decays the meter back down. Fever **replaces** the manual `r` toggle —
 the only path to the rainbow is to type.
 
-The four stages, each 0.25 of the 0..1 meter:
+The four stages, each one unit of the `0..=4` meter (originally drafted as
+0.25 of a `0..=1` meter — rescaled during implementation; see the shipped-shape
+note above):
 
 1. **plain** — no digit coloring, no mono highlight accent, no decorative
    animation. The press flash still fires (it's input confirmation, not
@@ -71,11 +83,13 @@ Consequences:
 
 ### Score representation vs. renderer
 
-The renderer never sees the raw `0..4` score; `UiState::fever_fill_fraction()`
-normalises it to `0..1` for the meter fill width. The 0..4 form stays an
-implementation detail of `ui_state.rs`, so the renderer's geometry code reads
-"width × fraction" without any mental scaling and the renderer tests work in
-`0..1` space.
+The renderer never sees the raw `0..=4` score; `UiState::fever_fill_fraction()`
+exposes **sub-stage progress** on `0..=1` — `(score − lower_threshold_of_stage)
+.clamp(0, 1)`, not an overall `score / FEVER_MAX` normalization. Each stage
+drives the fill 0 → 100 % of width in its own color, then resets with the
+previous stage's color persisting as a base layer. The 0..=4 shape stays an
+implementation detail of `ui_state.rs`, and the renderer's geometry code
+reads "width × fraction" without any mental scaling.
 
 ### Reading grace on `=`
 
