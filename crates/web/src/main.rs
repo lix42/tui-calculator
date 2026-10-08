@@ -42,13 +42,11 @@ fn main() -> std::io::Result<()> {
     std::panic::set_hook(Box::new(|info| {
         web_sys::console::error_1(&info.to_string().into());
     }));
-    let mut ui = UiState::new();
-    if prefers_light() {
-        ui.toggle_theme();
-    }
+    // Always starts Dark (the core's default), whatever the OS prefers, like
+    // the native build; `t` toggles it.
     let state: Shared = Rc::new(RefCell::new(Web {
         app: App::new(),
-        ui,
+        ui: UiState::new(),
         frame_size: (0, 0),
         painted_theme: None,
     }));
@@ -292,16 +290,6 @@ fn paint_body(theme: Theme) {
             .style()
             .set_property("background-color", &format!("rgb({r}, {g}, {b})"));
     }
-}
-
-/// Seed the theme from the OS setting. Dark is the core's default, so only a
-/// light preference changes anything.
-fn prefers_light() -> bool {
-    window()
-        .match_media("(prefers-color-scheme: light)")
-        .ok()
-        .flatten()
-        .is_some_and(|query| query.matches())
 }
 
 fn window() -> web_sys::Window {

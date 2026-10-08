@@ -1352,7 +1352,7 @@ section.
   default: a key that does nothing shouldn't cancel anything.
 - **`mousedown`, not `click`.** Matches native's `MouseEventKind::Down`, fires
   before the mouse-up, and still counts as a user gesture for the clipboard.
-- Theme seeded from `prefers-color-scheme` (the spec's optional item).
+- Theme seeded from `prefers-color-scheme` (the spec's optional item). *Reverted 2026-10-08: the web app always starts Dark, like native (Lix's call).*
 
 **Verified** in Chrome via DevTools on `trunk serve`:
 - `78-65*5` Enter → `-247`.
