@@ -1099,9 +1099,115 @@ mostly for `web-msg` (the `activate` funnel) and `web-entry` (pacing).
   `register_grace` plug into `activate`, which the extract-core-and-Msg
   split will have to preserve as the single input funnel.
 
-## web-spike — throwaway branch (not merged)
-Status: not started. Goal: prove Trunk + Ratzilla + Cloudflare Pages end-to-end
-and record answers to the seven questions in `tasks/web-spike.md` here.
+## web-spike — throwaway branch `spike/web-ratzilla` (not merged)
+Status: done (2026-10-07). Goal: prove Trunk + Ratzilla + Cloudflare end-to-end
+and record answers to the seven questions in `tasks/web-spike.md` here. Live
+probe: https://tui-calculator-spike.i-70e.workers.dev (throwaway; delete the
+`tui-calculator-spike` Worker once `web-deploy` ships).
+
+**2026-10-07.** Toolchain: rustc 1.99, `wasm32-unknown-unknown`, trunk 0.21.14,
+ratzilla 0.3.1 (ratatui 0.30.x, `default-features = false`). Probe app at
+`spike/` on the spike branch: shows key/mouse events, frame size + fps,
+calculator glyphs, titled bordered buttons; `?backend=dom|canvas|webgl2`; `p`
+toggles our own preventDefault; `y` writes the clipboard. Driven in Chrome via
+DevTools; claims below were observed, plus a read of ratzilla's source.
+
+**Build gotcha:** without default features, `ratatui-core` links against
+`critical-section` and the final wasm bin fails to link
+(`undefined symbol: _critical_section_1_0_acquire`). Ratzilla only pulls an
+impl into its *dev*-deps, so the web bin must add
+`critical-section = { version = "1", features = ["std"] }`. A wasm **lib** build
+doesn't hit it (no link step).
+
+**Q1 — browser defaults: Ratzilla does no `preventDefault` at all** (none in its
+source). Observed: an unhandled Tab moves focus from the grid to `<body>`, and
+then **every later key is lost** (Ratzilla's listener is on the focusable grid
+element, not the document). A document-level **capture-phase** keydown listener
+that calls `preventDefault` for Tab / Space / `/` / `'` / Backspace fixes it; it
+runs before Ratzilla's listener and doesn't stop propagation, so Ratzilla still
+gets the key.
+
+**Q2 — resize: DomBackend loses ALL input after any window resize.** Its resize
+handler (`dom.rs` `reset_grid`) swaps in a *new* grid `<div>`, but the key and
+mouse listeners (and `tabindex`) stay on the old, detached one. Observed after a
+resize: focus on `<body>`, keys and clicks both dead. The new size *does* show up
+as `frame.area()` (139×39 → 69×39), so `auto_select` from `draw_web` works.
+WebGl2 keeps input across a resize only because its canvas never resizes (it
+stays 70×44). → `web-entry` must not rely on `on_key_event` / `on_mouse_event`
+with DomBackend; see "Consequences" below. Worth an upstream issue/PR to
+ratzilla (re-attach callbacks in `reset_grid`).
+
+**Q3 — renderer: DomBackend**, with one rendering workaround.
+- *DomBackend:* browser font (Fira Code), box-drawing / `×` / `÷` / `−` / `⌫`,
+  truecolor and titled borders all render correctly. **Bug:** `Modifier::REVERSED`
+  with default colors renders **white-on-white** (DOM style is
+  `color: rgb(255,255,255); background-color: rgb(255,255,255)`), because
+  `Reset` fg and bg both resolve to white before the swap. This hits our stage-1
+  `plain_style` press flash, which is exactly REVERSED with no fg/bg.
+- *WebGl2Backend:* REVERSED correct, but its own bitmap font atlas mangles `⌫`
+  and drops `−`; fixed-size canvas; pulls ~1.2 MB of atlas into the wasm.
+- *CanvasBackend:* worst — gapped box-drawing lines, REVERSED ignored entirely.
+- Pacing: ~82–120 fps (rAF on a high-refresh display) with a per-frame hue cycle,
+  no visible jank on the DOM backend.
+
+**Q4 — core without crossterm: yes.** The six core modules (action, app, eval,
+layout, ui_state, ui) as a lib with
+`ratatui = { version = "0.30", default-features = false, features = ["palette"] }`
++ `web-time`: **all 154 tests pass natively** (including the `TestBackend` render
+tests), it builds for `wasm32-unknown-unknown`, and `cargo tree` shows zero
+crossterm/arboard. `web-core-split` can use these features from the start.
+
+**Q5 — mouse: exact.** `on_mouse_event` reports `SingleClick(Left)` with grid
+`col`/`row`; a click on a button's top-right border cell came back as exactly
+the expected `(27, 13)`, and a `Rect::contains` hit-test (same shape as
+`button_at`) resolved the right button. (Before a resize; see Q2.)
+
+**Q6 — modifiers: Cmd is invisible.** Ratzilla's `KeyEvent` has no `meta`; Cmd-C
+arrives as `Char('c')` with ctrl/alt/shift all false. In the calculator that
+**clears the expression**; Cmd-T → `t` toggles theme, Cmd-A → `a` resumes auto.
+Our own document listener can read `KeyboardEvent.metaKey` and drop Cmd chords
+before they reach the mapper (leaving the browser's own copy/paste intact).
+
+**Q7 — build/size/clipboard.** `trunk build --release` with `data-wasm-opt="z"`,
+`opt-level="z"`, LTO: **DomBackend-only 256 KB raw / 108 KB gzip** (the
+all-backends probe was 1.4 MB / 1.1 MB, almost all of it WebGl2's atlas).
+`navigator.clipboard.writeText` from a keydown handler resolved (`Copied!`) on
+localhost.
+
+**Q7 — deploy: Cloudflare Pages is now Workers Static Assets.** With wrangler
+4.148, `wrangler pages project create` / `pages deploy` *delegate* to Workers
+Static Assets and use the **cwd** as the asset directory. Run from `spike/`, it
+swept up `target/` and failed on a 28 MiB debug `.wasm` (25 MiB per-file limit);
+nothing was deployed. Cloudflare's docs now steer static sites to Workers. What
+worked: an assets-only `wrangler.jsonc` (`name`, `compatibility_date`,
+`assets.directory = "./dist"`, **no `main`**) + `wrangler deploy`. Served at
+`*.workers.dev` over HTTPS with `application/wasm` and brotli. On the live URL:
+renders at ~120 fps, keys arrive, `navigator.clipboard.writeText` → `Copied!`, no
+console errors apart from a favicon 404. Right after a deploy the edge returned
+404 for individual assets for roughly 10–30 s. Smoke tests should retry, not fail
+on the first 404. `wrangler deploy` also appends wrangler entries to the
+nearest `.gitignore`.
+
+### Consequences for later tasks
+- **web-entry:** use DomBackend. Own the input instead of Ratzilla's callbacks:
+  one document-level keydown listener (capture) that (a) drops Cmd/meta chords,
+  (b) `preventDefault`s Tab/Space/`/`/`'`/Backspace, (c) converts
+  `KeyboardEvent` → core `Key` directly (we get `metaKey` for free, and it
+  survives resizes). Mouse: a document/body click listener mapping
+  `clientX/Y` → cell via the grid element's rect and size (or fix ratzilla
+  upstream and use `on_mouse_event`). Add the `critical-section` dep.
+- **REVERSED white-on-white:** `plain_style`'s press flash needs an explicit
+  fg/bg on the web (or a ratzilla fix in its color mapping). Decide in
+  `web-entry`; it's the one place the "terminal default drives the flash" design
+  doesn't carry over.
+- **web-core-split:** use `default-features = false, features = ["palette"]`
+  for core's ratatui from day one (Q4).
+- **web-deploy:** target **Workers Static Assets** (assets-only `wrangler.jsonc`
+  → `wrangler deploy`), not `wrangler pages deploy`. Keep `wrangler.jsonc` in the
+  web crate dir with `assets.directory` pointed at Trunk's `dist/`, and never
+  let the asset dir default to a directory containing `target/`. Add a favicon.
+- **web-msg:** `Key` needs a `meta` flag (or the web entry filters Cmd chords
+  before building a `Key`); the native side always sets it false.
 
 ## web-core-split — `Cargo.toml`, `crates/core/`, native bin
 Status: not started. Goal: workspace with a backend-free `calculator-core` lib +
