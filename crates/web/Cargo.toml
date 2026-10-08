@@ -20,7 +20,6 @@ web-sys = { version = "0.3", features = [
     "EventTarget",
     "HtmlElement",
     "KeyboardEvent",
-    "MediaQueryList",
     "MouseEvent",
     "Navigator",
     "Window",
