@@ -1,10 +1,3 @@
-mod action;
-mod app;
-mod eval;
-mod layout;
-mod ui;
-mod ui_state;
-
 use std::io::{self, Result, Stdout};
 use std::time::Duration;
 
@@ -19,10 +12,11 @@ use crossterm::terminal::{
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 
-use action::{Action, quick_map};
-use app::App;
-use layout::Dir;
-use ui_state::UiState;
+use calculator_core::action::{Action, quick_map};
+use calculator_core::app::App;
+use calculator_core::layout::Dir;
+use calculator_core::ui;
+use calculator_core::ui_state::UiState;
 
 type Tui = Terminal<CrosstermBackend<Stdout>>;
 
@@ -358,7 +352,7 @@ fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ui_state::EffectKind;
+    use calculator_core::ui_state::EffectKind;
     use crossterm::event::KeyEvent;
 
     /// Whether a hue drift is currently in flight.
@@ -506,7 +500,7 @@ mod tests {
         // The `r` toggle used to flip mono/rainbow. Fever stage drives that
         // now, so `r` should fall through as an unmapped key — not navigate,
         // not quit, not somehow still re-color.
-        use ui_state::ColorMode;
+        use calculator_core::ui_state::ColorMode;
         let mut app = App::new();
         let mut ui = UiState::new();
         assert_eq!(ui.color_mode(), ColorMode::Mono); // startup: stage One = mono
@@ -522,7 +516,7 @@ mod tests {
     #[test]
     fn t_key_toggles_theme() {
         // `t` flips the rainbow palette theme, routed here like `r`.
-        use ui_state::Theme;
+        use calculator_core::ui_state::Theme;
         let mut app = App::new();
         let mut ui = UiState::new();
         assert_eq!(ui.theme(), Theme::Dark);

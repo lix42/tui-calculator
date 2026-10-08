@@ -1,5 +1,7 @@
 # web-core-split: Extract `calculator-core` into a Cargo Workspace
 
+**Done:** 2026-10-07. The root package stays the native bin; the core lives in `crates/core`. See progress.md.
+
 > Sub-task of [web-ratzilla](web-ratzilla.md) (split 2026-10-06).
 
 ## Goal

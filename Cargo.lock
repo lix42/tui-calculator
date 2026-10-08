@@ -141,6 +141,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8f1fe948ff07f4bd06c30984e69f5b4899c516a3ef74f34df92a2df2ab535495"
 
 [[package]]
+name = "calculator-core"
+version = "0.1.0"
+dependencies = [
+ "ratatui",
+ "web-time",
+]
+
+[[package]]
 name = "castaway"
 version = "0.2.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1774,9 +1782,9 @@ name = "tui-calculator"
 version = "0.1.0"
 dependencies = [
  "arboard",
+ "calculator-core",
  "crossterm",
  "ratatui",
- "web-time",
 ]
 
 [[package]]

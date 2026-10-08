@@ -1209,9 +1209,48 @@ nearest `.gitignore`.
 - **web-msg:** `Key` needs a `meta` flag (or the web entry filters Cmd chords
   before building a `Key`); the native side always sets it false.
 
-## web-core-split — `Cargo.toml`, `crates/core/`, native bin
-Status: not started. Goal: workspace with a backend-free `calculator-core` lib +
-thin native bin; pure relocation, test suite unchanged.
+## web-core-split — `Cargo.toml`, `crates/core/`, `src/main.rs`
+Status: done (2026-10-07). Goal: workspace with a backend-free `calculator-core`
+lib + thin native bin; pure relocation, test suite unchanged.
+
+**Shape.** The root package stays the native binary (`tui-calculator`,
+`src/main.rs`) and is also the workspace root, so `cargo run` is unchanged.
+`crates/core` (`calculator-core`) holds action, app, eval, layout, ui_state and
+ui, moved with `git mv` so history follows them. `lib.rs` just declares them
+`pub mod`. `crates/web` will be the next member. No `[workspace.dependencies]`:
+the core wants ratatui's default features off and the binary wants them on, and
+Cargo can't turn defaults back on for a member that inherits a
+`default-features = false` workspace entry. Two plain entries are clearer.
+
+**What actually had to change** (besides imports in `main.rs`):
+- Nothing needed widening for `main.rs`'s own code: everything it uses was
+  already `pub`.
+- **Test-only getters.** `main.rs` tests call four `#[cfg(test)]` `UiState`
+  getters (`focus`, `layout_index`, `override_layout`, `fever_score`), and
+  `cfg(test)` isn't visible to another crate's tests. They're now gated
+  `#[cfg(any(test, feature = "test-support"))]`, and the root crate enables
+  `test-support` only through its **dev**-dependency on the core. So the web
+  crate never sees them, and making them unconditionally `pub` would have leaked
+  the raw focus cell into the core's API. `web-msg` moves those tests into core,
+  after which this can go back to plain `cfg(test)`.
+- **`impl Default` for `App` and `UiState`**, delegating to `new()`. Clippy's
+  `new_without_default` only fires on *exported* types, so becoming a library
+  surfaced it.
+
+**Verified.** `cargo test --workspace`: 154 core + 25 native = **179**, the same
+as before the move. `cargo clippy --workspace --all-targets` and
+`cargo clippy -p calculator-core` (without `test-support`) are clean, and
+`cargo fmt --all --check` passes. `cargo build -p calculator-core --target
+wasm32-unknown-unknown` succeeds, and `cargo tree -p calculator-core` has no
+crossterm or arboard. Native smoke test through a pty: `78-65*5` Enter shows
+`-247`, and `q` exits with status 0 within about 0.1 s, matching `main`. (A first
+harness run looked like a hang on quit. It was the harness, which stopped
+reading the pty, so the app's terminal-restore writes blocked.)
+
+**For `web-msg` / `web-entry`.** Plain `cargo test` at the root now runs only
+the binary's 25 tests, so use `--workspace` (CLAUDE.md updated). The web crate
+should depend on `calculator-core` only; ratatui comes re-exported via ratzilla,
+so match versions (0.30.x).
 
 ## web-msg — `calculator-core` (new msg module), native `main.rs`
 Status: not started. Goal: neutral `Key` → `Msg` mapper + `apply_msg` in core so
