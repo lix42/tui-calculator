@@ -10,6 +10,19 @@ locally with `trunk serve`.
 
 ## Design
 
+> **Revised by `web-spike` (2026-10-07) — read its progress section first.**
+> Use **DomBackend**. Do **not** rely on `on_key_event` / `on_mouse_event`: after
+> any window resize DomBackend swaps in a new grid element and both go dead.
+> Instead, own the input: one document-level **capture** `keydown` listener that
+> drops Cmd/meta chords (Ratzilla can't see Cmd, so Cmd-C would arrive as a bare
+> `c` = clear), `preventDefault`s Tab/Space/`/`/`'`/Backspace (an unhandled Tab
+> strands focus and loses every later key), and builds the core `Key` from
+> `KeyboardEvent` directly. Handle mouse with a click listener: `clientX/Y` →
+> cell via the grid element's rect / size. Also: add
+> `critical-section = { version = "1", features = ["std"] }` (link error
+> otherwise), and fix `REVERSED`-with-default-colors rendering white-on-white
+> (stage-1 press flash). The sketch below predates these findings.
+
 ```rust
 fn main() -> io::Result<()> {
     let state = Rc::new(RefCell::new((App::new(), UiState::new())));

@@ -1,22 +1,28 @@
-# web-deploy: Trunk Release Build + Cloudflare Pages
+# web-deploy: Trunk Release Build + Cloudflare (Workers Static Assets)
 
 > Sub-task of [web-ratzilla](web-ratzilla.md) (split 2026-10-06).
 
 ## Goal
 
-Ship `calculator-web` to a public Cloudflare Pages URL with a repeatable
+Ship `calculator-web` to a public Cloudflare URL with a repeatable
 build, and document the web build for users.
 
 ## Design
 
 - Trunk `index.html` (monospace web font, dark background) + `Trunk.toml` if
   needed; `trunk build --release` → `dist/` (static HTML + JS glue + `.wasm`).
-- **Cloudflare Pages**, not a Worker — the build is pure static assets.
+- **Workers Static Assets, not Pages** (changed after `web-spike` Q7): wrangler
+  4.148 delegates `pages` commands to Workers and Cloudflare's docs steer static
+  sites there. An assets-only `wrangler.jsonc` (`name`, `compatibility_date`,
+  `assets.directory = "./dist"`, no `main`) + `wrangler deploy`. Proven by the
+  spike at `tui-calculator-spike.i-70e.workers.dev`. Delete that throwaway
+  Worker once this ships.
 - **Deploy path (recommended):** a GitHub Action in `.github/workflows/` that
-  installs the wasm target + Trunk, builds, and runs `wrangler pages deploy dist`
-  (API token + account id as repo secrets). Preferred over Pages' Git integration
-  because Pages' build image has no Rust/Trunk toolchain. *Not yet confirmed by
-  Lix — settle before starting.*
+  installs the wasm target + Trunk, builds, and runs `wrangler deploy` (API
+  token + account id as repo secrets). Preferred over Workers Builds' Git
+  integration, whose build image has no Rust/Trunk toolchain. *Not yet
+  confirmed by Lix — settle before starting.*
+- Add a favicon (the spike's only console error was its 404).
 - Size: release profile + `wasm-opt` (Trunk `data-wasm-opt`); record the final
   `.wasm` size.
 - **README:** a web section — URL, how to run locally (`trunk serve`), and the
@@ -25,7 +31,8 @@ build, and document the web build for users.
 
 ## How to Verify
 
-Load the Pages URL and repeat `web-entry`'s smoke test against the deployed build.
+Load the deployed URL and repeat `web-entry`'s smoke test against the deployed build (retry briefly — assets can 404 for ~10–30 s right
+after a deploy).
 A push to `main` (or whatever trigger is chosen) redeploys.
 
 ## Dependencies

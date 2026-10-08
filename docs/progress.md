@@ -1100,9 +1100,10 @@ mostly for `web-msg` (the `activate` funnel) and `web-entry` (pacing).
   split will have to preserve as the single input funnel.
 
 ## web-spike — throwaway branch `spike/web-ratzilla` (not merged)
-Status: in progress — Q1–Q6 answered; Q7 build/size answered, Cloudflare deploy
-pending. Goal: prove Trunk + Ratzilla + Cloudflare Pages end-to-end and record
-answers to the seven questions in `tasks/web-spike.md` here.
+Status: done (2026-10-07). Goal: prove Trunk + Ratzilla + Cloudflare end-to-end
+and record answers to the seven questions in `tasks/web-spike.md` here. Live
+probe: https://tui-calculator-spike.i-70e.workers.dev (throwaway; delete the
+`tui-calculator-spike` Worker once `web-deploy` ships).
 
 **2026-10-07.** Toolchain: rustc 1.99, `wasm32-unknown-unknown`, trunk 0.21.14,
 ratzilla 0.3.1 (ratatui 0.30.x, `default-features = false`). Probe app at
@@ -1171,8 +1172,21 @@ before they reach the mapper (leaving the browser's own copy/paste intact).
 `opt-level="z"`, LTO: **DomBackend-only 256 KB raw / 108 KB gzip** (the
 all-backends probe was 1.4 MB / 1.1 MB, almost all of it WebGl2's atlas).
 `navigator.clipboard.writeText` from a keydown handler resolved (`Copied!`) on
-localhost. **Not yet done:** the Cloudflare Pages deploy (needs a `wrangler`
-login on Lix's account).
+localhost.
+
+**Q7 — deploy: Cloudflare Pages is now Workers Static Assets.** With wrangler
+4.148, `wrangler pages project create` / `pages deploy` *delegate* to Workers
+Static Assets and use the **cwd** as the asset directory. Run from `spike/`, it
+swept up `target/` and failed on a 28 MiB debug `.wasm` (25 MiB per-file limit);
+nothing was deployed. Cloudflare's docs now steer static sites to Workers. What
+worked: an assets-only `wrangler.jsonc` (`name`, `compatibility_date`,
+`assets.directory = "./dist"`, **no `main`**) + `wrangler deploy`. Served at
+`*.workers.dev` over HTTPS with `application/wasm` and brotli. On the live URL:
+renders at ~120 fps, keys arrive, `navigator.clipboard.writeText` → `Copied!`, no
+console errors apart from a favicon 404. Right after a deploy the edge returned
+404 for individual assets for roughly 10–30 s. Smoke tests should retry, not fail
+on the first 404. `wrangler deploy` also appends wrangler entries to the
+nearest `.gitignore`.
 
 ### Consequences for later tasks
 - **web-entry:** use DomBackend. Own the input instead of Ratzilla's callbacks:
@@ -1188,6 +1202,10 @@ login on Lix's account).
   doesn't carry over.
 - **web-core-split:** use `default-features = false, features = ["palette"]`
   for core's ratatui from day one (Q4).
+- **web-deploy:** target **Workers Static Assets** (assets-only `wrangler.jsonc`
+  → `wrangler deploy`), not `wrangler pages deploy`. Keep `wrangler.jsonc` in the
+  web crate dir with `assets.directory` pointed at Trunk's `dist/`, and never
+  let the asset dir default to a directory containing `target/`. Add a favicon.
 - **web-msg:** `Key` needs a `meta` flag (or the web entry filters Cmd chords
   before building a `Key`); the native side always sets it false.
 
