@@ -1,0 +1,8 @@
+// Assets-only Worker: Trunk's dist/ served as static files, no Worker script.
+// (`wrangler pages …` now delegates to Workers Static Assets and would treat
+// the cwd — target/ included — as the asset dir.)
+{
+  "name": "tui-calculator-spike",
+  "compatibility_date": "2026-10-07",
+  "assets": { "directory": "./dist" }
+}
