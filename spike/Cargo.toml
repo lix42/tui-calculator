@@ -1,0 +1,26 @@
+# Throwaway spike for docs/tasks/web-spike.md — never merged.
+[package]
+name = "ratzilla-spike"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+# Standalone: not a member of the (future) calculator workspace.
+[workspace]
+
+[dependencies]
+ratzilla = "0.3.1"
+web-sys = { version = "0.3", features = ["Window", "Location", "Navigator", "Clipboard", "Document", "Performance", "KeyboardEvent", "AddEventListenerOptions", "EventTarget", "console"] }
+wasm-bindgen-futures = "0.4"
+# ratatui-core (no default features) needs a critical-section impl at link time;
+# ratzilla only pulls one into its dev-deps, so consumers must add it.
+critical-section = { version = "1", features = ["std"] }
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+
+[features]
+default = ["all-backends"]
+all-backends = []
