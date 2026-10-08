@@ -3,8 +3,9 @@ name: Deploy web
 # Builds crates/web with Trunk once and publishes dist/ to GitHub Pages
 # (https://lix42.github.io/tui-calculator/). The Cloudflare deploy
 # (`web-deploy-cf`) will be a second job publishing the same build.
-# Pull requests run only the build (the `pages` job is skipped), so a change
-# that breaks the web build fails before merge.
+# Pull requests (and manual runs from other branches) run only the build; the
+# `pages` job publishes from main alone. So a change that breaks the web build
+# fails before merge, and nothing unmerged reaches the live site.
 on:
   push:
     branches: [ "main" ]
@@ -50,7 +51,10 @@ jobs:
 
   pages:
     needs: build
-    if: github.event_name != 'pull_request'
+    # Explicit, not just the `github-pages` environment's main-only branch rule:
+    # that rule is a repo setting the workflow can't see. A PR's ref is
+    # `refs/pull/…`, so this skips PRs too.
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
       pages: write
