@@ -22,8 +22,9 @@ ratatui = { version = "0.30", default-features = false, features = ["palette"] }
 web-time = "1.1.0"
 
 [features]
-# Exposes a few read-only `UiState` getters (focus cell, active pad, override,
-# fever score) that the native binary's `main.rs` tests assert on. Enabled only
-# by that crate's *dev*-dependency, so the getters stay out of the public API the
-# web build sees. Expected to go away when `web-msg` moves those tests into core.
+# Exposes two read-only `UiState` getters (active pad, override) that the native
+# binary's `main.rs` tests assert on — its Resize routing and the end-to-end
+# crossterm wiring test. Enabled only by that crate's *dev*-dependency, so the
+# getters stay out of the public API the web build sees. (`web-msg` moved the key
+# tests into core, so `focus` and `fever_score` went back to plain `cfg(test)`.)
 test-support = []
