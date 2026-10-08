@@ -1057,7 +1057,12 @@ one edit is one press's worth of climb at most; the fever mechanic is tied to
 ## Next Task
 
 With fever-mode shipped, the layout arc + rainbow pass + fever pass are all
-behind us. **`web-ratzilla` is the only remaining task.**
+behind us. **`web-ratzilla` is the only remaining work**, split on 2026-10-06
+into `web-spike` / `web-core-split` / `web-msg` / `web-entry` / `web-deploy` /
+`web-paste` (optional) — see their stub sections below and the banner in
+`tasks/web-ratzilla.md`. **Start with `web-spike` and `web-core-split` in
+parallel** (no shared files). The carry-forwards below still apply; they're
+mostly for `web-msg` (the `activate` funnel) and `web-entry` (pacing).
 
 - **`web-ratzilla`** — Ratzilla WASM build + Cloudflare Pages deploy. Known gaps:
   event-loop inversion → a `Msg` enum (see the deferred note above — this is the
@@ -1093,3 +1098,27 @@ behind us. **`web-ratzilla` is the only remaining task.**
   web port needs no changes to the math itself. `register_press_fever` and
   `register_grace` plug into `activate`, which the extract-core-and-Msg
   split will have to preserve as the single input funnel.
+
+## web-spike — throwaway branch (not merged)
+Status: not started. Goal: prove Trunk + Ratzilla + Cloudflare Pages end-to-end
+and record answers to the seven questions in `tasks/web-spike.md` here.
+
+## web-core-split — `Cargo.toml`, `crates/core/`, native bin
+Status: not started. Goal: workspace with a backend-free `calculator-core` lib +
+thin native bin; pure relocation, test suite unchanged.
+
+## web-msg — `calculator-core` (new msg module), native `main.rs`
+Status: not started. Goal: neutral `Key` → `Msg` mapper + `apply_msg` in core so
+native and web share one definition of what each key does.
+
+## web-entry — `calculator-web`
+Status: not started. Goal: Ratzilla entry point with keys, mouse, copy and
+animations working under `trunk serve`.
+
+## web-deploy — `index.html`, `.github/workflows/`, `README.md`
+Status: not started. Goal: public Cloudflare Pages URL with a repeatable build,
+plus README web section.
+
+## web-paste — `calculator-web` (optional)
+Status: not started. Goal: DOM paste → `App::apply_str`, matching native
+bracketed paste.
