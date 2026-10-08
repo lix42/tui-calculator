@@ -1,39 +1,45 @@
-# web-deploy: Trunk Release Build + Cloudflare (Workers Static Assets)
+# web-deploy: Trunk Release Build + GitHub Pages
 
-> Sub-task of [web-ratzilla](web-ratzilla.md) (split 2026-10-06).
+> Sub-task of [web-ratzilla](web-ratzilla.md) (split 2026-10-06). **Rescoped
+> 2026-10-08:** the site goes to GitHub Pages here; the Cloudflare deploy moved
+> to [web-deploy-cf](web-deploy-cf.md), which publishes the same build.
 
 ## Goal
 
-Ship `calculator-web` to a public Cloudflare URL with a repeatable
-build, and document the web build for users.
+Ship `calculator-web` to a public URL with a repeatable build, and document the
+web build for users.
 
 ## Design
 
-- Trunk `index.html` (monospace web font, dark background) + `Trunk.toml` if
-  needed; `trunk build --release` → `dist/` (static HTML + JS glue + `.wasm`).
-- **Workers Static Assets, not Pages** (changed after `web-spike` Q7): wrangler
-  4.148 delegates `pages` commands to Workers and Cloudflare's docs steer static
-  sites there. An assets-only `wrangler.jsonc` (`name`, `compatibility_date`,
-  `assets.directory = "./dist"`, no `main`) + `wrangler deploy`. Proven by the
-  spike at `tui-calculator-spike.i-70e.workers.dev`. Delete that throwaway
-  Worker once this ships.
-- **Deploy path (recommended):** a GitHub Action in `.github/workflows/` that
-  installs the wasm target + Trunk, builds, and runs `wrangler deploy` (API
-  token + account id as repo secrets). Preferred over Workers Builds' Git
-  integration, whose build image has no Rust/Trunk toolchain. *Not yet
-  confirmed by Lix — settle before starting.*
-- Add a favicon (the spike's only console error was its 404).
-- Size: release profile + `wasm-opt` (Trunk `data-wasm-opt`); record the final
-  `.wasm` size.
-- **README:** a web section — URL, how to run locally (`trunk serve`), and the
-  web differences (`q` / Ctrl-C do nothing; clipboard needs the page focused;
-  paste support per `web-paste`).
+- **Release build:** `trunk build --release --cargo-profile wasm-release
+  --public-url ./` in `crates/web`.
+  - `[profile.wasm-release]` (root `Cargo.toml`) inherits `release` with
+    `opt-level = "z"`, LTO and one codegen unit. It is a separate profile so
+    the native release build is untouched.
+  - `data-wasm-opt="z"` on the Trunk link in `index.html` runs wasm-opt, in
+    release builds only.
+- **`--public-url ./`:** every asset URL in `dist/` is relative. One build then
+  works under Pages' `/tui-calculator/` subpath and at a host's root
+  (Cloudflare, `web-deploy-cf`).
+- **Deploy:** `.github/workflows/deploy-web.yml` runs on a push to `main` or by
+  hand.
+  - A `build` job installs the wasm target and a pinned Trunk release binary,
+    builds, and uploads `dist/` with `actions/upload-pages-artifact`.
+  - A `pages` job runs `actions/deploy-pages`.
+  - The repo's Pages source is set to **GitHub Actions**
+    (`build_type=workflow`); there is no `gh-pages` branch.
+  - Splitting build from publish lets `web-deploy-cf` add a second publish job
+    for the same artifact.
+- **Favicon:** an inline SVG data URI in `index.html`, so there's no extra file
+  and no 404.
+- **README:** URL, how to run locally, and the web differences.
 
 ## How to Verify
 
-Load the deployed URL and repeat `web-entry`'s smoke test against the deployed build (retry briefly — assets can 404 for ~10–30 s right
-after a deploy).
-A push to `main` (or whatever trigger is chosen) redeploys.
+After merge, the workflow goes green and https://lix42.github.io/tui-calculator/
+loads. Repeat `web-entry`'s smoke test there: type, `=`, `y` copies, clicks,
+resize, and no console errors. Before merge, serving `dist/` under a
+`/tui-calculator/` subpath locally checks the relative URLs.
 
 ## Dependencies
 

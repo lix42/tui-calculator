@@ -1,8 +1,8 @@
 # web-ratzilla: Render the Calculator on the Web (Ratzilla) + Deploy to Cloudflare
 
 > **Split 2026-10-06 — this file is now background, not a task.** Work is tracked
-> in six sub-tasks: [web-spike](web-spike.md) → [web-core-split](web-core-split.md)
-> → [web-msg](web-msg.md) → [web-entry](web-entry.md) → [web-deploy](web-deploy.md),
+> in sub-tasks: [web-spike](web-spike.md) → [web-core-split](web-core-split.md)
+> → [web-msg](web-msg.md) → [web-entry](web-entry.md) → [web-deploy](web-deploy.md) → [web-deploy-cf](web-deploy-cf.md),
 > plus optional [web-paste](web-paste.md). Where this file and a sub-task disagree,
 > the sub-task wins. Superseded below:
 >
@@ -19,8 +19,9 @@
 >   `fn main()` binaries built by Trunk.
 > - **Mouse (open question): likely full support** — `on_mouse_event` reports
 >   `SingleClick` with cell `col/row` on all backends; confirm in `web-spike`.
-> - **Deploy path (open question): recommended GitHub Action + `wrangler pages
->   deploy`**, pending Lix's confirmation (see `web-deploy`).
+> - **Deploy path: settled 2026-10-08.** A GitHub Action deploys one Trunk
+>   build to GitHub Pages (`web-deploy`) and then to Cloudflare Workers Static
+>   Assets (`web-deploy-cf`), not `wrangler pages deploy`.
 
 ## Requirement
 

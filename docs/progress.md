@@ -1103,7 +1103,7 @@ mostly for `web-msg` (the `activate` funnel) and `web-entry` (pacing).
 Status: done (2026-10-07). Goal: prove Trunk + Ratzilla + Cloudflare end-to-end
 and record answers to the seven questions in `tasks/web-spike.md` here. Live
 probe: https://tui-calculator-spike.i-70e.workers.dev (throwaway; delete the
-`tui-calculator-spike` Worker once `web-deploy` ships).
+`tui-calculator-spike` Worker once `web-deploy-cf` ships).
 
 **2026-10-07.** Toolchain: rustc 1.99, `wasm32-unknown-unknown`, trunk 0.21.14,
 ratzilla 0.3.1 (ratatui 0.30.x, `default-features = false`). Probe app at
@@ -1375,9 +1375,33 @@ section.
   another tab. My `navigator.clipboard.readText()` probe hung on Chrome's
   permission prompt, so the copy was confirmed by wrapping `writeText` instead.
 
-## web-deploy — `index.html`, `.github/workflows/`, `README.md`
-Status: not started. Goal: public Cloudflare Pages URL with a repeatable build,
-plus README web section.
+## web-deploy — `Cargo.toml`, `crates/web/index.html`, `.github/workflows/deploy-web.yml`, `README.md`
+Status: done (2026-10-08). Goal: public URL with a repeatable build, plus
+README web section.
+
+**2026-10-08.** Rescoped: GitHub Pages here, Cloudflare in `web-deploy-cf`
+(Lix wants both; Pages first).
+
+- **Release build:** `[profile.wasm-release]` (`opt-level = "z"`, LTO, one
+  codegen unit) plus `data-wasm-opt="z"`. The `.wasm` is **307 KB raw, 139 KB
+  gzip, 114 KB brotli** (1.5 MB before wasm-bindgen and wasm-opt). The JS loader
+  is 32 KB, 6.5 KB gzip. That's close to the spike's DOM-only 256 KB counter, so
+  the whole calculator costs about 50 KB of wasm on top of Ratzilla.
+- **`--public-url ./`** makes `dist/` host-agnostic. It was checked by serving
+  `dist/` under `/tui-calculator/` with `python3 -m http.server`: the wasm loaded
+  from the subpath, `78-65*5=` gave `-247`, and the console showed no errors.
+- **Workflow:** the `build` job uploads with `upload-pages-artifact@v5`, then
+  the `pages` job runs `deploy-pages@v5`. Pages was enabled with
+  `build_type=workflow` through the API, so its URL is
+  https://lix42.github.io/tui-calculator/. Concurrency group `pages`, which
+  never cancels a deploy that's in flight.
+- Tried and left out: `wrangler.jsonc` and `wrangler-action`. They wait for
+  `web-deploy-cf`, along with the repo secrets.
+- **Pitfall:** a `trunk build` racing a running `trunk serve` on the same
+  `dist/` fails with "error writing JS loader file". Stop the serve first.
+
+## web-deploy-cf — `crates/web/wrangler.jsonc`, `.github/workflows/deploy-web.yml`
+Status: not started. Goal: the same `dist/` on Cloudflare Workers Static Assets.
 
 ## web-paste — `calculator-web` (optional)
 Status: not started. Goal: DOM paste → `App::apply_str`, matching native
