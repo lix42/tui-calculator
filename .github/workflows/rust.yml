@@ -17,6 +17,14 @@ jobs:
     steps:
     - uses: actions/checkout@v4
     - name: Build
-      run: cargo build --verbose
+      run: cargo build --workspace --verbose
+    # `--workspace`: at the root, plain `cargo test` runs only the native
+    # binary's tests and silently skips calculator-core's.
     - name: Run tests
-      run: cargo test --verbose
+      run: cargo test --workspace --verbose
+    # The core must stay buildable for the web: no crossterm/arboard may creep
+    # into its dependency tree.
+    - name: Build core for wasm32
+      run: |
+        rustup target add wasm32-unknown-unknown
+        cargo build -p calculator-core --target wasm32-unknown-unknown --verbose

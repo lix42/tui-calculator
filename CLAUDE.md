@@ -8,16 +8,19 @@ TUI calculator built with Rust (edition 2024) and Ratatui 0.30 / Crossterm 0.29.
 
 ## Commands
 
-- `cargo run` — run the app
+- `cargo run` — run the app (the root package is the native binary)
 - `cargo build` — build
-- `cargo test` — run all tests
-- `cargo test <test_name>` — run a single test
-- `cargo clippy` — lint
-- `cargo fmt` — format
+- `cargo test --workspace` — run all tests (plain `cargo test` at the root runs only the native binary's tests, not the core's)
+- `cargo test --workspace <test_name>` — run a single test
+- `cargo clippy --workspace --all-targets` — lint
+- `cargo fmt --all` — format
+- `cargo build -p calculator-core --target wasm32-unknown-unknown` — check the core still builds for the web
 
 ## Architecture
 
-Modules under `src/`:
+Cargo workspace (`web-core-split`). The **root package** (`tui-calculator`, `src/main.rs`) is the native binary: crossterm, arboard, and the event loop. **`crates/core`** (`calculator-core`, lib) holds every other module and has no crossterm/arboard dependency, so the web build can share it. Its `ratatui` has `default-features = false` (+ `palette`); the defaults include the crossterm backend, which doesn't build for wasm. Deps are per *package*, which is why this is a workspace and not one target-gated package. `main.rs` imports the modules as `calculator_core::{action, app, layout, ui, ui_state}`. **Test-support gotcha:** a few read-only `UiState` getters (`focus`, `layout_index`, `override_layout`, `fever_score`) exist only for tests. They're gated `#[cfg(any(test, feature = "test-support"))]`, because another crate's tests can't see `cfg(test)` items. The root crate turns `test-support` on only through its **dev**-dependency on the core, so the getters stay out of the API the web crate sees. Expected to revert to `cfg(test)` once `web-msg` moves those tests into core.
+
+Modules (`src/main.rs`, the rest under `crates/core/src/`):
 
 - **`main.rs`** — terminal setup/teardown and the event loop. `handle_event` resolves each key/mouse event to an `Action` (or a focus move) and dispatches it; `key_to_action` is the single keyboard→`Action` map. A left-click resolves to a button index via `ui.button_at`, then to its label via `ui.button_label`. `Event::Paste` feeds the pasted string to `App::apply_str`, which bypasses `activate` entirely — so a paste neither climbs fever nor fires the reading grace. Paste is one logical edit, and the fever mechanic is tied to *typing* pace, not to input volume. Copy-to-clipboard (`y`/`Y` or a click on the display affordance → `do_copy` → `arboard`), manual pad-switching (`Tab` → `ui.cycle_layout`, which *pins* the pad), resume-auto (`a`/`A` → `ui.resume_auto`), palette-theme toggle (`t`/`T` → `ui.toggle_theme`), quick-input mode (`i` → `ui.set_quick_mode(true)`), and shape-based auto-select on resize (`Event::Resize` → `ui.auto_select`) are all routed *here*, not as an `Action`: they're side effects on the UI/result that change no calculator state, so they stay out of `App::apply`'s pure total match and out of `action.rs`. There is **no** `r`/`R` toggle any more — mono-vs-rainbow is driven by fever stage, not a user preference. The app launches on the default 5×4 standard pad; auto-selection only adapts the pad on `Event::Resize` (it does *not* seed from the initial `terminal.size()`, so a tiny launch terminal shows the standard pad until the first resize). `activate` is the shared input funnel (apply → `register_press` → `register_press_fever`); on a *successful* `=` (gated on `app.copy_text().is_some()`, the existing read-only "is there a result?" question — so a syntax error can't claim a success) it additionally fires the hue drift *and* `register_grace` (which pauses fever decay for 2.5 s so a reading pause doesn't cost altitude). Those two must stay *after* `register_press`, which clears the previous trigger's effects. **Gotcha:** bracketed paste must be enabled in `setup_terminal` (`EnableBracketedPaste`) or `Event::Paste` never fires. **`Esc` is not a quit key** (`q` / `Ctrl-C` only): it means "leave quick-mode", so the vim reflex of double-tapping it can't discard an expression. The quick-mode block sits *before* the nav gate (it reassigns `hjkl`) and must repeat the same `!intersects(CONTROL|ALT)` guard — without it `Ctrl-U` types `4`.
 - **`action.rs`** — the typed input boundary. An `Action` enum plus a validated `Digit` newtype (private field, fallible `Digit::new`, so an out-of-range digit is unrepresentable). `from_key` (keyboard ASCII) and `from_label` (button-grid glyphs) resolve raw input into an `Action` *before* it reaches `App`, so illegal input is rejected at the edge instead of mishandled downstream. Also owns `QUICK_MAP`, the quick-input table: a `const &[(char, &str)]` read in *both* directions (`quick_map` / `quick_key`) so routing and the on-screen tips can't drift. It maps to *labels*, not `Action`s, so callers resolve through `from_label`. A `const` slice rather than a `HashMap` because it then lives in rodata with no `LazyLock` or allocation — and at 13 entries a linear scan beats hashing. Pure domain logic — no crossterm dependency.

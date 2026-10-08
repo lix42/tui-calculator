@@ -400,6 +400,12 @@ pub struct UiState {
     quick_mode: bool,
 }
 
+impl Default for UiState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl UiState {
     pub fn new() -> Self {
         // The registry: the standard pad first (the startup default), then the
@@ -472,7 +478,7 @@ impl UiState {
     /// [`fever_fill_fraction`](Self::fever_fill_fraction), which hides the
     /// internal scale. Exposed here so cross-module tests can print the raw
     /// score in panic messages without reaching into the private field.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn fever_score(&self) -> f64 {
         self.fever_score
     }
@@ -836,20 +842,20 @@ impl UiState {
     /// The focused lattice cell. Test-only accessor for the input-routing tests
     /// in `main.rs`, which assert focus moved without reaching into the private
     /// field.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn focus(&self) -> (usize, usize) {
         self.focus
     }
 
     /// The active pad's index in the registry. Test-only, for the switch tests.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn layout_index(&self) -> usize {
         self.layout
     }
 
     /// The pinned-pad override, or `None` when following auto-selection.
     /// Test-only, for the override/resume tests.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn override_layout(&self) -> Option<usize> {
         self.override_layout
     }

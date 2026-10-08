@@ -1,0 +1,29 @@
+[package]
+name = "calculator-core"
+version = "0.1.0"
+edition = "2024"
+description = "Backend-free calculator core: state, evaluator, layout, and Ratatui rendering"
+
+[dependencies]
+# Default features **off**: they include ratatui's crossterm backend, which
+# doesn't build for wasm. Rendering only needs `Frame`/widgets, and the
+# `TestBackend` the `ui.rs` tests render through needs no backend feature —
+# verified by web-spike Q4 (all core tests green, wasm32 build clean).
+# `palette`: pulls in (and re-exports) the `palette` crate for
+# `Color::from_hsluv`, used to build the rainbow palette in perceptually-uniform
+# HSLuv space so the ten digit hues read as evenly bright (see `ui::glyph_color`).
+ratatui = { version = "0.30", default-features = false, features = ["palette"] }
+# Drop-in `Instant` for the press flash and copy status (`ui_state.rs`).
+# `std::time::Instant::now()` *panics* on `wasm32-unknown-unknown`; web-time backs
+# it with `performance.now()` there and re-exports std's on native. Deliberately a
+# plain dependency, **not** target-gated: this crate is shared with the native
+# binary, so gating it on wasm would leave native with an unresolved `web_time`
+# import.
+web-time = "1.1.0"
+
+[features]
+# Exposes a few read-only `UiState` getters (focus cell, active pad, override,
+# fever score) that the native binary's `main.rs` tests assert on. Enabled only
+# by that crate's *dev*-dependency, so the getters stay out of the public API the
+# web build sees. Expected to go away when `web-msg` moves those tests into core.
+test-support = []
