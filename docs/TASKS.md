@@ -30,7 +30,7 @@
 [x] web-spike: Throwaway Ratzilla counter + Cloudflare Pages deploy; answers browser-default keys (Tab/Space/`/`), resize, renderer choice, core-without-crossterm ratatui features, mouse coords, Cmd modifiers, wasm size. Never merged. Depends: none.
 [x] web-core-split: Cargo workspace — backend-free `calculator-core` lib (action/app/eval/layout/ui_state/ui) + thin native `calculator` bin. Pure relocation, same tests green. Depends: none (soft: web-spike Q4 for ratatui features).
 [x] web-msg: Neutral `Key` + `Msg` + `key_to_msg(Key, quick_mode)` + `apply_msg` in core; `activate` moves to core as the single funnel; Copy/Quit stay per-entry effects. Native `handle_event` becomes translate-and-dispatch. Depends (hard): web-core-split.
-[ ] web-entry: `calculator-web` Ratzilla bin (DomBackend) — Rc<RefCell> state, own document-level key + mouse listeners (Ratzilla's die on resize; see web-spike), tick+draw in draw_web, auto_select on size change, navigator.clipboard copy. Works under `trunk serve`. Depends (hard): web-msg, web-spike.
+[x] web-entry: `calculator-web` Ratzilla bin (DomBackend) — Rc<RefCell> state, own document-level key + mouse listeners (Ratzilla's die on resize; see web-spike), tick+draw in draw_web, auto_select on size change, navigator.clipboard copy. Works under `trunk serve`. Depends (hard): web-msg, web-spike.
 [ ] web-deploy: Trunk release build + Cloudflare Workers Static Assets (assets-only `wrangler.jsonc`; recommended: GitHub Action + `wrangler deploy`, to confirm), wasm-opt, README web section. Depends (hard): web-entry.
 [ ] web-paste: (optional) DOM `paste` listener → `App::apply_str`, native paste parity. Depends (hard): web-entry.
 

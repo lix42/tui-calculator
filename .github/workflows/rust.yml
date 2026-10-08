@@ -22,9 +22,9 @@ jobs:
     # binary's tests and silently skips calculator-core's.
     - name: Run tests
       run: cargo test --workspace --verbose
-    # The core must stay buildable for the web: no crossterm/arboard may creep
-    # into its dependency tree.
-    - name: Build core for wasm32
+    # The web entry (and so the core under it) must stay buildable for wasm: no
+    # crossterm/arboard may creep into the core's dependency tree.
+    - name: Build web for wasm32
       run: |
         rustup target add wasm32-unknown-unknown
-        cargo build -p calculator-core --target wasm32-unknown-unknown --verbose
+        cargo build -p calculator-web --target wasm32-unknown-unknown --verbose

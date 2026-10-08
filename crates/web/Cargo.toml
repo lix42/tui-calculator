@@ -1,0 +1,32 @@
+[package]
+name = "calculator-web"
+version = "0.1.0"
+edition = "2024"
+description = "The calculator in the browser, via Ratzilla"
+publish = false
+
+[dependencies]
+calculator-core = { path = "../core" }
+ratzilla = "0.3.1"
+web-sys = { version = "0.3", features = [
+    "AddEventListenerOptions",
+    "Clipboard",
+    "console",
+    "CssStyleDeclaration",
+    "Document",
+    "DomException",
+    "DomRect",
+    "Element",
+    "EventTarget",
+    "HtmlElement",
+    "KeyboardEvent",
+    "MediaQueryList",
+    "MouseEvent",
+    "Navigator",
+    "Window",
+] }
+wasm-bindgen-futures = "0.4"
+# Without ratatui's default features, `ratatui-core` links against
+# `critical-section`, and ratzilla only provides an impl in its dev-deps. The
+# final wasm bin fails to link (`_critical_section_1_0_acquire`) without this.
+critical-section = { version = "1", features = ["std"] }

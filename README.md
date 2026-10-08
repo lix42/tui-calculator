@@ -23,6 +23,26 @@ A terminal-based calculator built with Rust and [Ratatui](https://ratatui.rs).
 cargo run
 ```
 
+### In the browser
+
+The same calculator runs in a browser tab, built with
+[Ratzilla](https://github.com/orhun/ratzilla) and [Trunk](https://trunkrs.dev):
+
+```sh
+rustup target add wasm32-unknown-unknown
+cargo install trunk
+cd crates/web && trunk serve   # then open http://127.0.0.1:8080
+```
+
+Every key below works the same, except:
+
+- `q` does nothing: a tab isn't quit, it's closed.
+- `Ctrl` and `Cmd` chords are left to the browser, so `Cmd-C` / `Ctrl-C` copy
+  the selection and `Ctrl-−` zooms instead of reaching the calculator. Use `y`
+  to copy the result.
+- The palette starts dark or light to match the OS setting; `t` still toggles it.
+- Pasting an expression isn't supported yet.
+
 ### Controls
 
 | Key             | Action               |
