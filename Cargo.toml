@@ -27,3 +27,12 @@ arboard = { version = "3", features = ["wayland-data-control"] }
 
 [dev-dependencies]
 calculator-core = { path = "crates/core", features = ["test-support"] }
+
+# The browser build's profile (`trunk build --release --cargo-profile
+# wasm-release`, see crates/web). Size beats speed for a page download, and the
+# native release build keeps the default `release` profile untouched.
+[profile.wasm-release]
+inherits = "release"
+opt-level = "z"
+lto = true
+codegen-units = 1

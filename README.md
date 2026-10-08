@@ -25,8 +25,11 @@ cargo run
 
 ### In the browser
 
+**Try it: <https://lix42.github.io/tui-calculator/>**
+
 The same calculator runs in a browser tab, built with
-[Ratzilla](https://github.com/orhun/ratzilla) and [Trunk](https://trunkrs.dev):
+[Ratzilla](https://github.com/ratatui/ratzilla) and [Trunk](https://trunkrs.dev).
+Every push to `main` redeploys it. To run it locally:
 
 ```sh
 rustup target add wasm32-unknown-unknown

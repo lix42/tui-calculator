@@ -1,0 +1,57 @@
+name: Deploy web
+
+# Builds crates/web with Trunk once and publishes dist/ to GitHub Pages
+# (https://lix42.github.io/tui-calculator/). The Cloudflare deploy
+# (`web-deploy-cf`) will be a second job publishing the same build.
+on:
+  push:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+# One Pages deploy at a time. Don't cancel one that's in flight: a half-finished
+# Pages deployment is worse than a short wait.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  TRUNK_VERSION: v0.21.14
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - name: Install wasm target and Trunk
+      run: |
+        rustup target add wasm32-unknown-unknown
+        curl -sSL "https://github.com/trunk-rs/trunk/releases/download/${TRUNK_VERSION}/trunk-x86_64-unknown-linux-gnu.tar.gz" \
+          | tar -xz -C /usr/local/bin trunk
+    # `--public-url ./` makes every asset URL relative, so the same dist/ works
+    # under Pages' /tui-calculator/ subpath and at a host's root (Cloudflare).
+    - name: Build
+      working-directory: crates/web
+      run: trunk build --release --cargo-profile wasm-release --public-url ./
+    - name: Report size
+      working-directory: crates/web/dist
+      run: |
+        for f in *.wasm *.js; do
+          echo "$f: $(stat -c %s "$f") bytes, $(gzip -9c "$f" | wc -c) gzipped"
+        done
+    - uses: actions/upload-pages-artifact@v5
+      with:
+        path: crates/web/dist
+
+  pages:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+    - id: deployment
+      uses: actions/deploy-pages@v5

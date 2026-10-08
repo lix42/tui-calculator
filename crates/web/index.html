@@ -5,7 +5,9 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Calculator</title>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/firacode/6.2.0/fira_code.min.css" />
-    <link data-trunk rel="rust" data-bin="calculator-web" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🧮</text></svg>" />
+    <!-- `data-wasm-opt` runs only for `trunk build --release`. -->
+    <link data-trunk rel="rust" data-bin="calculator-web" data-wasm-opt="z" />
     <style>
       /* DomBackend sizes its grid from <body>, so the body must fill the window.
          The background is repainted per theme from Rust (`paint_body`). */
