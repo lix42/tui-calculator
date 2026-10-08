@@ -478,7 +478,7 @@ impl UiState {
     /// [`fever_fill_fraction`](Self::fever_fill_fraction), which hides the
     /// internal scale. Exposed here so cross-module tests can print the raw
     /// score in panic messages without reaching into the private field.
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(test)]
     pub fn fever_score(&self) -> f64 {
         self.fever_score
     }
@@ -842,7 +842,7 @@ impl UiState {
     /// The focused lattice cell. Test-only accessor for the input-routing tests
     /// in `main.rs`, which assert focus moved without reaching into the private
     /// field.
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(test)]
     pub fn focus(&self) -> (usize, usize) {
         self.focus
     }

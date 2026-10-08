@@ -8,6 +8,7 @@
 pub mod action;
 pub mod app;
 pub mod eval;
+pub mod input;
 pub mod layout;
 pub mod ui;
 pub mod ui_state;

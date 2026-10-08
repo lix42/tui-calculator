@@ -1252,9 +1252,68 @@ the binary's 25 tests, so use `--workspace` (CLAUDE.md updated). The web crate
 should depend on `calculator-core` only; ratatui comes re-exported via ratzilla,
 so match versions (0.30.x).
 
-## web-msg — `calculator-core` (new msg module), native `main.rs`
-Status: not started. Goal: neutral `Key` → `Msg` mapper + `apply_msg` in core so
-native and web share one definition of what each key does.
+## web-msg — `crates/core/src/input.rs` (new), `src/main.rs`
+Status: done (2026-10-07). Goal: neutral `Key` → `Msg` mapper + `apply_msg` in
+core so native and web share one definition of what each key does.
+
+**What landed.** A new core module, `input.rs`:
+- `Key { code: KeyCode, ctrl, alt }`, with the core's own `KeyCode` (`Other`
+  for anything unused).
+- `Msg`, with ten variants.
+- `key_to_msg(key, quick_mode)`.
+- `apply_msg`, total over `Msg`.
+- `activate`, moved verbatim with its ordering comments.
+- `key_to_action` and `focus_dir`, retyped on the core `KeyCode`.
+
+`main.rs` dropped from 730 to 331 lines. Its key handling is now
+`to_key(crossterm KeyEvent)` → `key_to_msg` → `apply_msg`, with `Msg::Copy`
+intercepted for `do_copy`/arboard. Mouse, resize and paste routing are
+unchanged (all native).
+
+**Decisions.**
+- **No `meta` on `Key`.** The merged `web-entry` design drops Cmd chords before
+  building a `Key`, and terminals never report Cmd.
+- **`Copy` is a documented no-op in `apply_msg`** rather than a separate
+  "effect" type. Both entry points intercept it, the web sketch already matched
+  on it, and a test pins the no-op (`copy_is_left_to_the_entry_point`). `Quit`
+  sets `app.should_quit`, which is ordinary `App` state; the web never reads it.
+- **Quick-mode enter/leave are two variants**, not `SetQuickMode(bool)`: the
+  triggers are one-way keys, so the names read better at call sites.
+- **Inert nav letter:** `key_to_msg` returns `None` early inside the quick-mode
+  block, rather than adding a condition to the navigation rule, so the rule
+  order reads top to bottom. (Lix chose to have me write `key_to_msg` and will
+  review it.)
+
+**Verified.**
+- `cargo test --workspace`: **182 core + 5 native = 187.** The 22 key tests
+  moved from `main.rs` to `input::tests`, which drive state through
+  `key_to_msg` → `apply_msg`. Five tests are new: Ctrl-C vs bare `c`, the full
+  command table, meaningless keys → `None`, Alt-Esc still leaves quick-mode,
+  and Copy is a no-op in core. `main.rs` keeps native-only tests: `to_key`
+  translation (twice), an end-to-end crossterm → rules wiring test, resize
+  routing, and `do_copy`.
+- **Differential check against `main`** (scratch crate, not committed): old
+  `handle_event` key branch verbatim vs new `to_key` → `key_to_msg` →
+  `apply_msg`. That covered all 95 printable ASCII keys + 11 named keys × 6
+  modifier combos × 5 starting states (fresh, quick-mode on, mid-expression,
+  evaluated, pinned pad + quick-mode + typed digit), comparing display, focus,
+  quick-mode, pad, override, theme, quit flag and effect count. **3,180 cases,
+  0 differences.** A planted bug (new path ignores Esc) produced 12
+  differences, so the check does catch real changes.
+- Clippy (workspace and core-only) clean, fmt clean, core builds for wasm32.
+- PTY smoke test: quick-mode `k d j m` Enter gives the same screen as the
+  `main` build (`2×10` / `20`), and Ctrl-C exits with status 0 in ~0.1 s.
+
+**test-support narrowed.** The native tests now use only `layout_index` and
+`override_layout`, so `focus` and `fever_score` went back to plain
+`cfg(test)`. The feature stays for the other two.
+
+**For `web-entry`.** Build a `Key` from `KeyboardEvent` (`key()` →
+`KeyCode::Char` for single chars, plus the named keys; `ctrlKey`/`altKey`). Drop
+`metaKey` chords before that. Call `preventDefault` exactly when `key_to_msg`
+returns `Some`, intercept `Msg::Copy` (navigator.clipboard) and ignore
+`Msg::Quit`; everything else goes to `apply_msg`. Clicks use the core
+`activate`.
 
 ## web-entry — `calculator-web`
 Status: not started. Goal: Ratzilla entry point with keys, mouse, copy and

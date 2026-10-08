@@ -1,5 +1,7 @@
 # web-msg: Backend-Neutral `Key` → `Msg` Mapper in Core
 
+**Done:** 2026-10-07. Lives in `crates/core/src/input.rs`; see progress.md.
+
 > Sub-task of [web-ratzilla](web-ratzilla.md) (split 2026-10-06). Realizes the
 > deferred "Unified `Msg` enum" note in `progress.md` → Known Issues / Deferred.
 
