@@ -21,6 +21,9 @@ fn main() -> io::Result<()> {
     let state = Rc::new(RefCell::new(Web { app: App::new(), ui: UiState::new(), grid: (0, 0) }));
     let terminal = Terminal::new(DomBackend::new()?)?;
     // Listeners live on `document`, which survives resizes (the grid doesn't).
+    // `listen` wraps a wasm_bindgen `Closure` and must `forget()` it (or store it
+    // for the app's lifetime): dropping the handle when `main` returns makes the
+    // JS callback throw on the next event.
     listen(&document, "keydown", capture = true, { let s = state.clone(); move |e: KeyboardEvent| on_key(&s, e) });
     listen(&document, "click", capture = false, { let s = state.clone(); move |e: MouseEvent| on_click(&s, e) });
     terminal.draw_web(move |frame| {
@@ -35,13 +38,18 @@ fn main() -> io::Result<()> {
 
 fn on_key(state: &Rc<RefCell<Web>>, e: KeyboardEvent) {
     if e.meta_key() { return; }                       // Cmd chords stay the browser's: Cmd-C must not clear
-    if matches!(e.key().as_str(), "Tab" | " " | "/" | "'" | "Backspace") { e.prevent_default(); }
+    if e.key() == "'" { e.prevent_default(); }        // Firefox quick-find would take focus; not a calculator key
     let Some(key) = to_core_key(&e) else { return };  // KeyboardEvent → core `Key` (from web-msg)
     let web = &mut *state.borrow_mut();
-    match key_to_msg(key, web.ui.quick_mode()) {
-        Some(Msg::Copy) => web_copy(state, &web.app, &mut web.ui),   // navigator.clipboard
-        Some(Msg::Quit) | None => {}
-        Some(msg) => apply_msg(&mut web.app, &mut web.ui, msg),
+    let Some(msg) = key_to_msg(key, web.ui.quick_mode()) else { return };
+    // Every key the calculator handles cancels its browser default: Tab (focus),
+    // Space / arrows (scroll), `/` (Firefox quick-find), Backspace. Keys it
+    // doesn't handle keep theirs.
+    e.prevent_default();
+    match msg {
+        Msg::Copy => web_copy(state, &web.app, &mut web.ui),   // navigator.clipboard
+        Msg::Quit => {}
+        msg => apply_msg(&mut web.app, &mut web.ui, msg),
     }
 }
 
@@ -56,11 +64,19 @@ fn on_click(state: &Rc<RefCell<Web>>, e: MouseEvent) {
 }
 ```
 
-- **Key handling order matters:** the meta check and `preventDefault` come
-  first, on the raw `KeyboardEvent`. An unhandled Tab moves focus to `<body>`,
-  and Space and `/` trigger browser actions (page scroll, Firefox quick-find).
-  Listening on `document` in the capture phase means keys arrive whatever has
-  focus, so there is no `tabindex` to keep alive across resizes.
+- **Key handling order matters.** The meta check comes first, on the raw
+  `KeyboardEvent`. Then `preventDefault` runs for exactly the keys `key_to_msg`
+  handles. That covers Tab (otherwise focus moves to `<body>`), Space and the
+  arrows (page scroll on a small viewport), and `/` (Firefox quick-find), with
+  no separate list to keep in sync. Listening on `document` in the capture
+  phase means keys arrive whatever has focus, so there is no `tabindex` to keep
+  alive across resizes.
+- **Held keys repeat, as they do natively.** Don't filter on
+  `KeyboardEvent.repeat`. crossterm only reports `KeyEventKind::Repeat` when the
+  app opts in with `REPORT_EVENT_TYPES`, and the native build doesn't, so a held
+  key arrives there as repeated `Press` events. Native's `Press` filter drops
+  release events (Windows), not repeats. Holding `⌫` deletes repeatedly on both
+  builds. Whether repeats should climb fever is a fever question, not a web one.
 - **Check the click math against `web.grid`.** The spike showed Ratzilla's own
   coordinates were exact *before* a resize. The hand-rolled version above must
   match them, including after one. Re-run the spike's corner-cell click test.
@@ -96,8 +112,9 @@ still green.
 Regression checks for the spike's findings:
 - **Resize the window, then type and click.** Both still work, and a click on a
   button's corner cell still hits that button.
-- Press **Tab** several times, then type. Keys still arrive, and the page
-  doesn't scroll on Space.
+- Press **Tab** several times, then type. Keys still arrive. In a viewport small
+  enough to scroll, Space and the arrow keys don't scroll the page.
+- **Hold `⌫`** on a long expression. It deletes repeatedly, as in the terminal.
 - **Cmd-C** with an expression on screen leaves it unchanged.
 - At **fever stage 1**, the press flash is visible, not white on white.
 
