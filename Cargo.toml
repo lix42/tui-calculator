@@ -4,7 +4,7 @@
 # depend on. Deps are per *package*, which is why the split is a workspace
 # rather than one target-gated package: the web build must never see crossterm
 # or arboard, neither of which compiles for `wasm32-unknown-unknown`.
-members = ["crates/core"]
+members = ["crates/core", "crates/web"]
 
 [package]
 name = "tui-calculator"

@@ -1315,9 +1315,65 @@ returns `Some`, intercept `Msg::Copy` (navigator.clipboard) and ignore
 `Msg::Quit`; everything else goes to `apply_msg`. Clicks use the core
 `activate`.
 
-## web-entry — `calculator-web`
-Status: not started. Goal: Ratzilla entry point with keys, mouse, copy and
+## web-entry — `crates/web/`, `.github/workflows/rust.yml`, `README.md`
+Status: done (2026-10-08). Goal: Ratzilla entry point with keys, mouse, copy and
 animations working under `trunk serve`.
+
+**2026-10-08.** New workspace member `crates/web` (`calculator-web`, bin):
+DomBackend, `Rc<RefCell<Web>>` state, document-level `keydown` (capture) and
+`mousedown` listeners, `tick` + `ui::draw` in `draw_web`, `auto_select` when
+`frame.area()` changes, `navigator.clipboard` copy. CI's wasm step now builds
+`calculator-web` (which covers the core). README gained an "In the browser"
+section.
+
+**Found while building (not in the spike):**
+- **DomBackend renders `Color::Reset` as hard-coded white**: `color: rgb(255,255,255)`
+  for any default fg, and a white background for a `REVERSED` cell with a default
+  bg. The spike saw this only as the stage-1 white-on-white flash, but it also
+  makes the **Light theme unreadable** (default-colored text drawn white on a
+  light page). Fix, web-only: after `ui::draw`, `resolve_default_colors` swaps
+  every `Reset` for the theme's own default fg/bg. In the browser the entry
+  point *is* the terminal, so it supplies the defaults; the foregrounds are the
+  HSLuv grays at `RESTING_BORDER_L_*` so the ripple anchor holds exactly. No
+  core change, and `plain_style` keeps its "terminal default" design.
+- **`frame.area()` ≠ the DOM grid.** `DomBackend::size()` is the window size in
+  cells minus one; the grid is sized from `<body>`. Clicks therefore count the
+  DOM's own rows and cells, not `frame.area()`. `#grid { width: fit-content }`
+  makes its rect ÷ count the cell size (a block `div` spans the whole body, which
+  skews the column math toward the right edge; Ratzilla's own mouse code has
+  that skew).
+
+**Deviations from the spec, deliberate:**
+- **Ctrl chords are dropped as well as Cmd.** Ctrl is the browser-shortcut key
+  on Windows/Linux: Ctrl-C is copy (and would be `Msg::Quit`), Ctrl-− zooms (and
+  would type `−`). No Ctrl chord does anything useful in the calculator on the
+  web, so they all keep their browser meaning.
+- **`Msg::Quit` returns before `preventDefault`**, so `q` keeps its (empty)
+  default: a key that does nothing shouldn't cancel anything.
+- **`mousedown`, not `click`.** Matches native's `MouseEventKind::Down`, fires
+  before the mouse-up, and still counts as a user gesture for the clipboard.
+- Theme seeded from `prefers-color-scheme` (the spec's optional item).
+
+**Verified** in Chrome via DevTools on `trunk serve`:
+- `78-65*5` Enter → `-247`.
+- The theme was seeded light from the OS setting, and the wide pad was
+  auto-selected.
+- The stage-1 press flash is a dark fill, not white on white.
+- Clicks on all four corner cells of seven buttons each hit their own button,
+  including the tall `=`.
+- After a resize (1100×700 → 700×900), corner clicks and keys still work.
+- `preventDefault` fired exactly for Tab, Space, ArrowDown, `/`, `'` and
+  Backspace, and not for `q`, F5 or `x`.
+- Cmd-C with `42` on screen left it unchanged and kept its browser default.
+- `y` → `writeText("42")` resolved and the status line read `Copied!`.
+- Fever climbed to the stage-4 rainbow.
+- The console showed no errors, only Trunk's `integrity` preload warning.
+- Natively, `cargo test --workspace` passes. Clippy is clean, both natively and
+  for `wasm32`.
+- Not checked by automation: holding `⌫` (the handler doesn't filter repeats,
+  so it follows the native behavior by construction), and a real paste in
+  another tab. My `navigator.clipboard.readText()` probe hung on Chrome's
+  permission prompt, so the copy was confirmed by wrapping `writeText` instead.
 
 ## web-deploy — `index.html`, `.github/workflows/`, `README.md`
 Status: not started. Goal: public Cloudflare Pages URL with a repeatable build,

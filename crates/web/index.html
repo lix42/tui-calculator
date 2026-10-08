@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Calculator</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/firacode/6.2.0/fira_code.min.css" />
+    <link data-trunk rel="rust" data-bin="calculator-web" />
+    <style>
+      /* DomBackend sizes its grid from <body>, so the body must fill the window.
+         The background is repainted per theme from Rust (`paint_body`). */
+      body { margin: 0; height: 100vh; overflow: hidden; background-color: #121212; }
+      pre { font-family: "Fira Code", monospace; font-size: 16px; margin: 0; }
+      /* Shrink-wrap the grid to its cells, so its rect divided by the cell
+         count is the cell size the click math needs. */
+      #grid { width: fit-content; user-select: none; }
+    </style>
+  </head>
+  <body></body>
+</html>
