@@ -11,11 +11,24 @@
     <style>
       /* DomBackend sizes its grid from <body>, so the body must fill the window.
          The background is repainted per theme from Rust (`paint_body`). */
-      body { margin: 0; height: 100vh; overflow: hidden; background-color: #121212; }
+      body {
+        margin: 0; height: 100vh; overflow: hidden; background-color: #121212;
+        /* The visible height on phones, where 100vh includes the area behind
+           Safari's address bar. Browsers without dvh keep the line above. */
+        height: 100dvh;
+        /* No double-tap zoom, so quick taps on one key all land; pinch-zoom
+           still works. */
+        touch-action: manipulation;
+        -webkit-tap-highlight-color: transparent;
+      }
       pre { font-family: "Fira Code", monospace; font-size: 16px; margin: 0; }
       /* Shrink-wrap the grid to its cells, so its rect divided by the cell
          count is the cell size the click math needs. */
-      #grid { width: fit-content; user-select: none; }
+      #grid {
+        width: fit-content;
+        /* Safari still needs the prefix; the callout is iOS's long-press menu. */
+        -webkit-user-select: none; user-select: none; -webkit-touch-callout: none;
+      }
     </style>
   </head>
   <body></body>

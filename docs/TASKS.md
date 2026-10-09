@@ -34,6 +34,7 @@
 [x] web-deploy: Trunk release build (`wasm-release` profile, wasm-opt, `--public-url ./`) + GitHub Action → GitHub Pages at lix42.github.io/tui-calculator, favicon, README web section. Rescoped 2026-10-08: Cloudflare moved to web-deploy-cf. Depends (hard): web-entry.
 [x] web-deploy-cf: Second job in deploy-web.yml publishing the same dist/ to Cloudflare Workers Static Assets (assets-only `wrangler.jsonc`, worker `tui-calculator`, wrangler-action + repo secrets); delete the spike Worker. Custom Domains calc.xuli.dev + calc.lix42.com added 2026-10-08. Depends (hard): web-deploy.
 [x] web-paste: (optional) DOM `paste` listener → shared core `input::paste` (also used by native bracketed paste) → `App::apply_str`, native paste parity. Depends (hard): web-entry.
+[x] web-touch: iOS Safari: `GridBackend` wrapper fixing Ratzilla's mobile frame/grid size mismatch (panic on load) and blank repaint after resize; `pointerdown`/`pointerup` instead of `mousedown` (copy on `pointerup` for touch, the edge that grants a user gesture), phone CSS (no double-tap zoom, no long-press select/callout, `100dvh`). Also `workers_dev: false` made explicit. Depends (hard): web-entry.
 
 <!-- Not a task: the `std::time::Instant` → `web-time` swap (a shared prerequisite
      of the two above) landed 2026-07-31 as a standalone 2-line change, so neither

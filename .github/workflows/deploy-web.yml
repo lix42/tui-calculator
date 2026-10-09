@@ -2,7 +2,7 @@ name: Deploy web
 
 # Builds crates/web with Trunk once and publishes that one dist/ twice: to
 # GitHub Pages (https://lix42.github.io/tui-calculator/) and to Cloudflare
-# Workers Static Assets (https://tui-calculator.<account>.workers.dev).
+# Workers Static Assets (https://calc.xuli.dev and https://calc.lix42.com).
 # Pull requests (and manual runs from other branches) run only the build; the
 # `pages` and `cloudflare` jobs publish from main alone. So a change that breaks the web build
 # fails before merge, and nothing unmerged reaches the live site.

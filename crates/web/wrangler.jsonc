@@ -7,10 +7,13 @@
   "name": "tui-calculator",
   "compatibility_date": "2026-10-08",
   "assets": { "directory": "./dist" },
+  // Off on purpose: the Custom Domains below replace it. Spelled out because
+  // wrangler warns on every deploy when it's left implicit.
+  "workers_dev": false,
   // Custom Domains: Cloudflare creates the DNS record and certificate for each
   // on deploy. Adding or removing one needs the CI token to have
   // Zone > Workers Routes > Write on that zone; deploys that leave them alone
-  // don't. workers.dev stays on as well.
+  // don't.
   "routes": [
     { "pattern": "calc.xuli.dev", "custom_domain": true },
     { "pattern": "calc.lix42.com", "custom_domain": true }

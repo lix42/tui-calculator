@@ -1426,7 +1426,12 @@ zones in the same Cloudflare account) as `routes` with `custom_domain: true` in
 Cloudflare creates each DNS record and certificate on deploy. Adding one needs
 the CI token to hold *Zone → Workers Routes → Write* on both zones (the "Edit
 Cloudflare Workers" template has it if its zone resources cover them).
-workers.dev and GitHub Pages stay up as mirrors.
+GitHub Pages stays up as a mirror.
+
+**Live after merge (#35):** both domains attached and served 200 over HTTPS.
+workers.dev went **off**: with `routes` set, wrangler disables it unless the
+config says `workers_dev: true`. Lix chose to leave it off; `web-touch` makes
+that explicit (`workers_dev: false`), which also silences the deploy warning.
 
 ## web-paste — `crates/core/src/input.rs`, `crates/web/src/main.rs`, `src/main.rs`
 Status: done (2026-10-08). Goal: DOM paste → `App::apply_str`, matching native
@@ -1450,3 +1455,63 @@ bracketed paste.
   fires, with or without our listener), so a **real Cmd-V was checked by hand
   in Chrome and Safari** (Safari included because it is the likeliest to
   withhold `paste` from a page with no text field; it didn't).
+
+## web-touch — `crates/web/src/grid_backend.rs`, `crates/web/src/main.rs`, `crates/web/index.html`
+Status: done (2026-10-08). Goal: the calculator works on iOS Safari.
+
+**2026-10-08.** Reported by Lix: on iOS Safari, taps did nothing.
+- **First guess was wrong.** I assumed iOS wasn't turning taps into
+  `mousedown` (it doesn't, for non-clickable elements) and switched to pointer
+  events. Still dead on the phone. A temporary on-screen log overlay showed the
+  real cause: a wasm panic on load, before any tap. The touch events arrived
+  fine.
+- **Cause: a Ratzilla 0.3.1 bug** (`dom.rs:321`, "index out of bounds: the len
+  is 1554 but the index is 1554"). `DomBackend::size()`, which sizes the
+  ratatui frame, uses the whole *physical screen* (`screen / (10, 19)`) when
+  `is_mobile()` (a user-agent check), while the DOM grid is `<body>` / measured
+  cell. iPhone: 42×48 frame over a 42×37 grid, so the first draw indexes past
+  the last cell. Desktop uses `window / (10, 20)`, which happens to undershoot.
+  Unfixed on Ratzilla's main too.
+- **Reproducing it on desktop:** Chrome's mobile emulation makes `screen` equal
+  the viewport, which hides it. An iPhone user agent plus an `initScript`
+  overriding `Screen.prototype.height`/`width` (932/430) made the live site
+  panic with the exact iPhone message.
+- **Fix: `GridBackend`** (`crates/web/src/grid_backend.rs`), a pass-through
+  wrapper over `DomBackend`. `size()` returns the grid computed the way
+  Ratzilla computes it (`measure_grid` mirrors its private `measure_cell_size`
+  + `calculate_size`), cached and cleared on the same `resize` events Ratzilla
+  re-measures on, so frame and grid always agree. `grid_size` is the pure part;
+  a test pins the iPhone's 42×37.
+- **Second Ratzilla bug, found while verifying:** every `resize` event rebuilds
+  the DOM grid blank, but ratatui repaints in full only when the frame *size*
+  changes. On the live site one same-size `resize` event wiped every button
+  label. iOS fires these as the address bar shows/hides. `GridBackend`'s
+  `resize` listener raises a flag (`take_resized`), and `run_frames` in
+  `main.rs` (our replacement for Ratzilla's `draw_web`) answers it with
+  `Terminal::clear`, which resets ratatui's back buffer so the next draw sends
+  every cell. (The first version kept its own copy of the screen inside the
+  backend; the code review pointed at `Terminal::clear` instead.)
+- **Code-review fixes:** `size()` can't fail (a failed measurement falls back to
+  Ratzilla's defaults; `draw_web` used to `unwrap` it, which would have been
+  the same dead page); `run_frames` logs a failed draw and stops instead of
+  panicking; `on_pointer` ignores non-primary pointers (a pinch's second finger
+  pressed a key) and returns before the layout read on a release that can't
+  copy.
+- **Ship review (diff-reviewer):** Ratzilla re-measures on a `resize` only once
+  its grid is in the document, i.e. after its first draw. A `resize` before
+  then (page loaded in a background tab, rAF paused, then rotated) would have
+  had our `size()` re-measure while Ratzilla populated at its construction
+  size: the same panic. `GridBackend::new` now measures alongside Ratzilla's
+  constructor, and the `resize` listener does nothing until the first draw.
+- **Kept the pointer events anyway** (`on_pointer`): robust on touch, and copy
+  on touch needs `pointerup`. `writeText` needs a user gesture, and the HTML
+  spec grants one on `pointerdown` only for a mouse, and on `pointerup` for
+  everything else; `copies_on(pointer_type, down)` picks the edge, unit-tested.
+- **Phone CSS** in `index.html`: `touch-action: manipulation` (no double-tap
+  zoom eating quick repeated taps; pinch still works),
+  `-webkit-user-select`/`-webkit-touch-callout: none` (no long-press selection
+  or menu), no tap highlight, and `height: 100dvh` after the `100vh` fallback.
+- **Verified:** Chrome with the iPhone setup: no panic, `9-4=` → `5`, labels
+  survive repeated same-size `resize` events. Lix confirmed on a real iPhone.
+- **Not fixed (pre-existing):** a window too short for every pad (e.g. 28 rows,
+  an iPhone in landscape) squashes a button row and clips its labels.
