@@ -13,7 +13,7 @@ use std::{cell::RefCell, rc::Rc};
 
 use calculator_core::action::Action;
 use calculator_core::app::App;
-use calculator_core::input::{Key, KeyCode, Msg, activate, apply_msg, key_to_msg};
+use calculator_core::input::{Key, KeyCode, Msg, activate, apply_msg, key_to_msg, paste};
 use calculator_core::ui;
 use calculator_core::ui_state::{Theme, UiState};
 use ratzilla::ratatui::Terminal;
@@ -22,7 +22,7 @@ use ratzilla::ratatui::style::Color;
 use ratzilla::{DomBackend, WebRenderer};
 use web_sys::wasm_bindgen::convert::FromWasmAbi;
 use web_sys::wasm_bindgen::{JsCast, JsValue, closure::Closure};
-use web_sys::{AddEventListenerOptions, DomException, KeyboardEvent, MouseEvent};
+use web_sys::{AddEventListenerOptions, ClipboardEvent, DomException, KeyboardEvent, MouseEvent};
 
 /// Everything the listeners and the frame loop share. `Rc<RefCell<…>>`, not
 /// `Arc<Mutex<…>>`: wasm is single-threaded, and no callback can run while
@@ -60,6 +60,10 @@ fn main() -> std::io::Result<()> {
     listen("mousedown", false, {
         let state = state.clone();
         move |e: MouseEvent| on_mouse_down(&state, &e)
+    });
+    listen("paste", false, {
+        let state = state.clone();
+        move |e: ClipboardEvent| on_paste(&state, &e)
     });
     terminal.draw_web(move |frame| {
         let web = &mut *state.borrow_mut();
@@ -198,6 +202,25 @@ fn on_mouse_down(state: &Shared, e: &MouseEvent) {
     {
         activate(&mut web.app, &mut web.ui, action);
     }
+}
+
+/// The browser's paste (Cmd-V / Ctrl-V, or the Edit menu) into the core's
+/// shared [`paste`], the same path as native bracketed paste.
+///
+/// The `paste` event rather than `navigator.clipboard.readText()`: the event
+/// carries the text with no permission prompt. Cmd-V / Ctrl-V can't also type
+/// a `v`, because [`on_key`] leaves Cmd/Ctrl chords to the browser, and that
+/// browser default is what fires this event.
+fn on_paste(state: &Shared, e: &ClipboardEvent) {
+    let Some(text) = e
+        .clipboard_data()
+        .and_then(|data| data.get_data("text").ok())
+    else {
+        return;
+    };
+    e.prevent_default();
+    let web = &mut *state.borrow_mut();
+    paste(&mut web.app, &mut web.ui, &text);
 }
 
 /// The grid cell under a point, given the grid's client rect

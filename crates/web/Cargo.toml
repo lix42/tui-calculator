@@ -11,8 +11,10 @@ ratzilla = "0.3.1"
 web-sys = { version = "0.3", features = [
     "AddEventListenerOptions",
     "Clipboard",
+    "ClipboardEvent",
     "console",
     "CssStyleDeclaration",
+    "DataTransfer",
     "Document",
     "DomException",
     "DomRect",

@@ -218,6 +218,19 @@ pub fn activate(app: &mut App, ui: &mut UiState, action: Action) {
     }
 }
 
+/// Enter pasted text: the native bracketed paste and the web `paste` event both
+/// land here, so the two can't drift apart.
+///
+/// Deliberately *not* routed through [`activate`]: a paste is one logical edit,
+/// so there's no per-char focus move or press flash, and fever is tied to
+/// typing *pace*, not input volume, so it neither climbs the meter nor starts
+/// the post-`=` reading grace. The status line is cleared first, like any new
+/// edit: a lingering "Copied!" refers to the previous result.
+pub fn paste(app: &mut App, ui: &mut UiState, text: &str) {
+    ui.clear_status();
+    app.apply_str(text);
+}
+
 /// The single keyboard → [`Action`] map. Printable characters resolve via
 /// [`Action::from_key`]; Enter and Backspace are handled here because they
 /// arrive as their own key codes, not as chars. Returns `None` for keys with
@@ -633,5 +646,22 @@ mod tests {
         assert_eq!(ui.focus(), six);
         let idx = ui.keypad().button_index_at(six.0, six.1);
         assert!(ui.is_button_pressed(idx));
+    }
+
+    #[test]
+    fn paste_is_one_edit_without_fever_or_effects() {
+        // The shared paste path for native and web: text lands as one edit, a
+        // stale status is cleared, and nothing that belongs to *typing* fires —
+        // no fever climb, no press flash or ripple, no focus move, and no
+        // drift/grace even when the paste ends in a successful `=`.
+        let (mut app, mut ui) = (App::new(), UiState::new());
+        ui.set_status("Copied!".to_string());
+        let focus = ui.focus();
+        paste(&mut app, &mut ui, "(1+2)×3=");
+        assert_eq!(app.display_lines().1, "9");
+        assert_eq!(ui.status_text(), None);
+        assert_eq!(ui.fever_score(), 0.0);
+        assert!(ui.effects().is_empty());
+        assert_eq!(ui.focus(), focus);
     }
 }
