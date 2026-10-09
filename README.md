@@ -57,7 +57,7 @@ Every key below works the same, except:
 | `Backspace`     | Delete last char     |
 | Arrow keys/HJKL | Move button focus    |
 | `Space`         | Press focused button |
-| Mouse click     | Press button         |
+| Click or tap    | Press button         |
 | Paste           | Enter a whole expression at once |
 | `q` or `Ctrl-C` | Quit                 |
 

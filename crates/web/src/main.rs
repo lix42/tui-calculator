@@ -9,6 +9,8 @@
 //! resize, so both go dead after the first one (see `web-spike` in
 //! `docs/progress.md`). Our listeners live on `document`, which never changes.
 
+mod grid_backend;
+
 use std::{cell::RefCell, rc::Rc};
 
 use calculator_core::action::Action;
@@ -16,13 +18,13 @@ use calculator_core::app::App;
 use calculator_core::input::{Key, KeyCode, Msg, activate, apply_msg, key_to_msg, paste};
 use calculator_core::ui;
 use calculator_core::ui_state::{Theme, UiState};
-use ratzilla::ratatui::Terminal;
+use grid_backend::GridBackend;
 use ratzilla::ratatui::buffer::Buffer;
 use ratzilla::ratatui::style::Color;
-use ratzilla::{DomBackend, WebRenderer};
+use ratzilla::ratatui::{Frame, Terminal};
 use web_sys::wasm_bindgen::convert::FromWasmAbi;
 use web_sys::wasm_bindgen::{JsCast, JsValue, closure::Closure};
-use web_sys::{AddEventListenerOptions, ClipboardEvent, DomException, KeyboardEvent, MouseEvent};
+use web_sys::{AddEventListenerOptions, ClipboardEvent, DomException, KeyboardEvent, PointerEvent};
 
 /// Everything the listeners and the frame loop share. `Rc<RefCell<…>>`, not
 /// `Arc<Mutex<…>>`: wasm is single-threaded, and no callback can run while
@@ -50,22 +52,29 @@ fn main() -> std::io::Result<()> {
         frame_size: (0, 0),
         painted_theme: None,
     }));
-    let terminal = Terminal::new(DomBackend::new().map_err(std::io::Error::other)?)?;
+    let terminal = Terminal::new(GridBackend::new().map_err(std::io::Error::other)?)?;
     // Capture phase, so keys arrive whatever has focus; there's no `tabindex`
     // to keep alive across the grid being replaced.
     listen("keydown", true, {
         let state = state.clone();
         move |e: KeyboardEvent| on_key(&state, &e)
     });
-    listen("mousedown", false, {
+    // Pointer events, not mouse events: iOS Safari doesn't turn a tap into
+    // `mousedown` on an element that doesn't look clickable, and the grid is
+    // plain text with the listener on `document`.
+    listen("pointerdown", false, {
         let state = state.clone();
-        move |e: MouseEvent| on_mouse_down(&state, &e)
+        move |e: PointerEvent| on_pointer(&state, &e, true)
+    });
+    listen("pointerup", false, {
+        let state = state.clone();
+        move |e: PointerEvent| on_pointer(&state, &e, false)
     });
     listen("paste", false, {
         let state = state.clone();
         move |e: ClipboardEvent| on_paste(&state, &e)
     });
-    terminal.draw_web(move |frame| {
+    run_frames(terminal, move |frame| {
         let web = &mut *state.borrow_mut();
         let area = frame.area();
         if (area.width, area.height) != web.frame_size {
@@ -82,6 +91,44 @@ fn main() -> std::io::Result<()> {
         resolve_default_colors(frame.buffer_mut(), theme);
     });
     Ok(())
+}
+
+/// The frame callback, filled in once it exists to refer to itself.
+type FrameSlot = Rc<RefCell<Option<Closure<dyn FnMut()>>>>;
+
+/// Draw with `render` on every animation frame, for the page's lifetime.
+///
+/// Ratzilla's `draw_web`, with two changes. After a `resize` the backend's
+/// grid is blank (see `grid_backend.rs`), so `Terminal::clear` resets
+/// ratatui's back buffer first and the draw sends every cell (strictly, every
+/// cell that isn't `Cell::default()`, which is what the rebuilt grid already
+/// holds; in practice `resolve_default_colors` leaves none). And a failed
+/// draw is logged, ending the loop, instead of `draw_web`'s `unwrap` panic.
+fn run_frames(mut terminal: Terminal<GridBackend>, mut render: impl FnMut(&mut Frame) + 'static) {
+    // The closure re-requests itself, so it holds a handle to its own slot.
+    // The cycle is the point: it keeps the loop alive.
+    let slot: FrameSlot = Rc::new(RefCell::new(None));
+    let next = slot.clone();
+    *slot.borrow_mut() = Some(Closure::new(move || {
+        let mut frame = || {
+            if terminal.backend().take_resized() {
+                terminal.clear()?;
+            }
+            terminal.draw(&mut render).map(drop)
+        };
+        if let Err(err) = frame() {
+            web_sys::console::error_1(&format!("draw failed, stopping: {err}").into());
+            return;
+        }
+        request_frame(next.borrow().as_ref().expect("set before the first frame"));
+    }));
+    request_frame(slot.borrow().as_ref().expect("just set"));
+}
+
+fn request_frame(callback: &Closure<dyn FnMut()>) {
+    window()
+        .request_animation_frame(callback.as_ref().unchecked_ref())
+        .expect("requestAnimationFrame");
 }
 
 /// Attach a `document` listener for the app's lifetime.
@@ -168,40 +215,64 @@ fn to_key(key: &str, alt: bool) -> Key {
     }
 }
 
-/// A left press on the copy affordance or a button. `mousedown` rather than
-/// `click`, matching the native `MouseEventKind::Down`; it counts as a user
-/// gesture for the clipboard just the same.
-fn on_mouse_down(state: &Shared, e: &MouseEvent) {
-    if e.button() != 0 {
+/// A primary press (`down`) or release on the copy affordance or a button,
+/// from a mouse, finger or pen. Buttons fire on the press, matching the native
+/// `MouseEventKind::Down`, so a tap feels as immediate as a click. The copy
+/// affordance fires on whichever edge [`copies_on`] says counts as a user
+/// gesture for the clipboard.
+fn on_pointer(state: &Shared, e: &PointerEvent, down: bool) {
+    // Only the first finger down is primary: a pinch's second finger would
+    // otherwise press a second key.
+    if e.button() != 0 || !e.is_primary() {
         return;
     }
-    // Look the grid up on every press: a resize replaces the element.
-    let Some(grid) = document().get_element_by_id("grid") else {
+    // A release only ever copies, so skip the layout read when it can't.
+    if !down && !copies_on(&e.pointer_type(), false) {
+        return;
+    }
+    let Some((col, row)) = grid_cell(e.client_x(), e.client_y()) else {
         return;
     };
-    // Count the cells in the DOM rather than trusting the frame size: Ratzilla
-    // sizes the grid from `<body>` but the frame from the window, and between
-    // a resize and the next frame the two are briefly different grids anyway.
+    let web = &mut *state.borrow_mut();
+    if web.ui.copy_hit(col, row) {
+        if copies_on(&e.pointer_type(), down) {
+            copy(state, web);
+        }
+    } else if down
+        && let Some(i) = web.ui.button_at(col, row)
+        && let Some(action) = Action::from_label(web.ui.button_label(i))
+    {
+        activate(&mut web.app, &mut web.ui, action);
+    }
+}
+
+/// Whether a press on the copy affordance copies on this edge of it.
+///
+/// `writeText` needs a user gesture, and browsers grant one for a mouse on
+/// `pointerdown` but for touch and pen only on `pointerup`: a finger landing
+/// might still turn into a scroll. So a mouse copies on the press (like every
+/// other click) and everything else on the release.
+fn copies_on(pointer_type: &str, down: bool) -> bool {
+    down == (pointer_type == "mouse")
+}
+
+/// The grid cell under a client point, or `None` outside the grid.
+fn grid_cell(x: i32, y: i32) -> Option<(u16, u16)> {
+    // Look the grid up on every press: a resize replaces the element.
+    let grid = document().get_element_by_id("grid")?;
+    // Count the cells in the DOM rather than trusting the frame size.
+    // `GridBackend` makes the two agree, but between a resize and the next
+    // frame they are briefly different grids anyway.
     let rows = grid.child_element_count();
     let cols = grid
         .first_element_child()
         .map_or(0, |line| line.child_element_count());
     let rect = grid.get_bounding_client_rect();
-    let Some((col, row)) = cell_at(
-        (f64::from(e.client_x()), f64::from(e.client_y())),
+    cell_at(
+        (f64::from(x), f64::from(y)),
         (rect.left(), rect.top(), rect.width(), rect.height()),
         (cols, rows),
-    ) else {
-        return;
-    };
-    let web = &mut *state.borrow_mut();
-    if web.ui.copy_hit(col, row) {
-        copy(state, web);
-    } else if let Some(i) = web.ui.button_at(col, row)
-        && let Some(action) = Action::from_label(web.ui.button_label(i))
-    {
-        activate(&mut web.app, &mut web.ui, action);
-    }
+    )
 }
 
 /// The browser's paste (Cmd-V / Ctrl-V, or the Edit menu) into the core's
@@ -242,8 +313,8 @@ fn cell_at(point: (f64, f64), rect: (f64, f64, f64, f64), cells: (u32, u32)) -> 
 /// Write the current result to the clipboard and report into the status line.
 ///
 /// The browser's counterpart of native `do_copy`, and like it a no-op when
-/// there's no result. `writeText` is async and needs a user gesture (keydown
-/// and mousedown both count) and a secure context (HTTPS or localhost). The
+/// there's no result. `writeText` is async and needs a user gesture (keydown,
+/// or the pointer edge [`copies_on`] picks) and a secure context (HTTPS or localhost). The
 /// status is set when the promise settles, so a refusal is reported, not
 /// papered over with an optimistic "Copied!".
 fn copy(state: &Shared, web: &Web) {
@@ -372,6 +443,18 @@ mod tests {
         assert_eq!(cell_at((180.0, 60.0), rect, cells), None);
         assert_eq!(cell_at((120.0, 130.0), rect, cells), None);
         assert_eq!(cell_at((120.0, 60.0), rect, (0, 0)), None);
+    }
+
+    #[test]
+    fn copy_fires_on_the_edge_that_grants_a_user_gesture() {
+        // A mouse copies on the press, exactly once.
+        assert!(copies_on("mouse", true));
+        assert!(!copies_on("mouse", false));
+        // Touch and pen copy on the release, exactly once.
+        for pointer in ["touch", "pen"] {
+            assert!(!copies_on(pointer, true));
+            assert!(copies_on(pointer, false));
+        }
     }
 
     #[test]
