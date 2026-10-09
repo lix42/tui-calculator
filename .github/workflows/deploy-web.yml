@@ -1,10 +1,10 @@
 name: Deploy web
 
-# Builds crates/web with Trunk once and publishes dist/ to GitHub Pages
-# (https://lix42.github.io/tui-calculator/). The Cloudflare deploy
-# (`web-deploy-cf`) will be a second job publishing the same build.
+# Builds crates/web with Trunk once and publishes that one dist/ twice: to
+# GitHub Pages (https://lix42.github.io/tui-calculator/) and to Cloudflare
+# Workers Static Assets (https://tui-calculator.<account>.workers.dev).
 # Pull requests (and manual runs from other branches) run only the build; the
-# `pages` job publishes from main alone. So a change that breaks the web build
+# `pages` and `cloudflare` jobs publish from main alone. So a change that breaks the web build
 # fails before merge, and nothing unmerged reaches the live site.
 on:
   push:
@@ -65,3 +65,27 @@ jobs:
     steps:
     - id: deployment
       uses: actions/deploy-pages@v5
+
+  cloudflare:
+    needs: build
+    # Same main-only gate as `pages`; there's no environment rule behind it.
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    # Reuse the Pages artifact (a single artifact.tar) instead of uploading
+    # dist/ a second time, so both hosts get byte-identical files.
+    - uses: actions/download-artifact@v8
+      with:
+        name: github-pages
+        path: ${{ runner.temp }}/pages
+    - name: Unpack dist/
+      run: |
+        mkdir -p crates/web/dist
+        tar -xf "$RUNNER_TEMP/pages/artifact.tar" -C crates/web/dist
+    - uses: cloudflare/wrangler-action@v4
+      with:
+        apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        workingDirectory: crates/web
+        command: deploy

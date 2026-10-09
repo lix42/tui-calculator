@@ -16,7 +16,7 @@ TUI calculator built with Rust (edition 2024) and Ratatui 0.30 / Crossterm 0.29.
 - `cargo fmt --all` — format
 - `cargo build -p calculator-core --target wasm32-unknown-unknown` — check the core still builds for the web
 - `cd crates/web && trunk serve` — run the browser build locally (needs `trunk` and the `wasm32-unknown-unknown` target)
-- `cd crates/web && trunk build --release --cargo-profile wasm-release --public-url ./` — the deployed build (what `.github/workflows/deploy-web.yml` runs on every push to `main`, publishing to GitHub Pages). Stop any running `trunk serve` first: both write `dist/`. `--public-url ./` keeps asset URLs relative, so one `dist/` works under Pages' `/tui-calculator/` subpath and at a host root.
+- `cd crates/web && trunk build --release --cargo-profile wasm-release --public-url ./` — the deployed build (what `.github/workflows/deploy-web.yml` runs on every push to `main`, publishing the one `dist/` to GitHub Pages and, via `crates/web/wrangler.jsonc`, to Cloudflare Workers Static Assets at `tui-calculator.i-70e.workers.dev`). Stop any running `trunk serve` first: both write `dist/`. `--public-url ./` keeps asset URLs relative, so one `dist/` works under Pages' `/tui-calculator/` subpath and at a host root.
 
 ## Architecture
 

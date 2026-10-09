@@ -1,0 +1,10 @@
+// Cloudflare Workers Static Assets: no `main` script, so Cloudflare serves
+// dist/ as-is. Deployed by the `cloudflare` job in
+// .github/workflows/deploy-web.yml, from the same build GitHub Pages gets.
+// Keep `assets.directory` on dist/: anything that contains target/ would pull
+// in debug .wasm files over the 25 MiB per-file limit.
+{
+  "name": "tui-calculator",
+  "compatibility_date": "2026-10-08",
+  "assets": { "directory": "./dist" }
+}

@@ -1401,7 +1401,21 @@ README web section.
   `dist/` fails with "error writing JS loader file". Stop the serve first.
 
 ## web-deploy-cf — `crates/web/wrangler.jsonc`, `.github/workflows/deploy-web.yml`
-Status: not started. Goal: the same `dist/` on Cloudflare Workers Static Assets.
+Status: done (2026-10-08). Goal: the same `dist/` on Cloudflare Workers Static Assets.
+
+**2026-10-08.**
+- **Assets-only Worker.** `crates/web/wrangler.jsonc` has no `main`, just
+  `assets.directory: ./dist`, so Cloudflare serves the files and runs none of
+  our code. `wrangler deploy --dry-run` locally read 3 files (html, js, wasm).
+- **One build, two hosts.** The new `cloudflare` job `needs: build` and
+  downloads the `github-pages` artifact (a single `artifact.tar`) and untars it
+  into `crates/web/dist`, instead of uploading `dist/` twice. Both hosts get
+  byte-identical files. Same explicit main-only `if:` as `pages`, so on a PR
+  the job shows *skipped*; the first real token test is the post-merge deploy.
+- **Secrets:** `CLOUDFLARE_API_TOKEN` (Lix, "Edit Cloudflare Workers"
+  template) and `CLOUDFLARE_ACCOUNT_ID` (from `wrangler whoami`).
+- Gitignored `crates/web/.wrangler`. URL:
+  <https://tui-calculator.i-70e.workers.dev>.
 
 ## web-paste — `crates/core/src/input.rs`, `crates/web/src/main.rs`, `src/main.rs`
 Status: done (2026-10-08). Goal: DOM paste → `App::apply_str`, matching native
