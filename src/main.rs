@@ -14,7 +14,9 @@ use ratatui::backend::CrosstermBackend;
 
 use calculator_core::action::Action;
 use calculator_core::app::App;
-use calculator_core::input::{Key, KeyCode as CoreKeyCode, Msg, activate, apply_msg, key_to_msg};
+use calculator_core::input::{
+    Key, KeyCode as CoreKeyCode, Msg, activate, apply_msg, key_to_msg, paste,
+};
 use calculator_core::ui;
 use calculator_core::ui_state::UiState;
 
@@ -111,14 +113,10 @@ fn handle_event(event: Event, app: &mut App, ui: &mut UiState) {
         return;
     }
     // A bracketed paste arrives as one (or, for large pastes, more than one)
-    // `Event::Paste` carrying the pasted text. It routes through
-    // `App::apply_str`, not `activate`, so the paste is one logical edit — no
-    // per-character focus move or press flash.
+    // `Event::Paste` carrying the pasted text. The core's `paste` is shared
+    // with the web build's `paste` event (one logical edit, no `activate`).
     if let Event::Paste(text) = event {
-        // A paste is a fresh edit, so drop any lingering "Copied!" from the last
-        // result before it's applied.
-        ui.clear_status();
-        app.apply_str(&text);
+        paste(app, ui, &text);
         return;
     }
     // `Press` only: on Windows crossterm also reports key *releases*, which

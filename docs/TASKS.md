@@ -33,7 +33,7 @@
 [x] web-entry: `calculator-web` Ratzilla bin (DomBackend) — Rc<RefCell> state, own document-level key + mouse listeners (Ratzilla's die on resize; see web-spike), tick+draw in draw_web, auto_select on size change, navigator.clipboard copy. Works under `trunk serve`. Depends (hard): web-msg, web-spike.
 [x] web-deploy: Trunk release build (`wasm-release` profile, wasm-opt, `--public-url ./`) + GitHub Action → GitHub Pages at lix42.github.io/tui-calculator, favicon, README web section. Rescoped 2026-10-08: Cloudflare moved to web-deploy-cf. Depends (hard): web-entry.
 [ ] web-deploy-cf: Second job in deploy-web.yml publishing the same dist/ to Cloudflare Workers Static Assets (assets-only `wrangler.jsonc`, worker `tui-calculator`, wrangler-action + repo secrets); delete the spike Worker. DNS mapping later. Depends (hard): web-deploy.
-[ ] web-paste: (optional) DOM `paste` listener → `App::apply_str`, native paste parity. Depends (hard): web-entry.
+[x] web-paste: (optional) DOM `paste` listener → shared core `input::paste` (also used by native bracketed paste) → `App::apply_str`, native paste parity. Depends (hard): web-entry.
 
 <!-- Not a task: the `std::time::Instant` → `web-time` swap (a shared prerequisite
      of the two above) landed 2026-07-31 as a standalone 2-line change, so neither

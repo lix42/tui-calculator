@@ -43,7 +43,6 @@ Every key below works the same, except:
 - `Ctrl` and `Cmd` chords are left to the browser, so `Cmd-C` / `Ctrl-C` copy
   the selection and `Ctrl-−` zooms instead of reaching the calculator. Use `y`
   to copy the result.
-- Pasting an expression isn't supported yet.
 
 ### Controls
 

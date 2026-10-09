@@ -1403,6 +1403,25 @@ README web section.
 ## web-deploy-cf — `crates/web/wrangler.jsonc`, `.github/workflows/deploy-web.yml`
 Status: not started. Goal: the same `dist/` on Cloudflare Workers Static Assets.
 
-## web-paste — `calculator-web` (optional)
-Status: not started. Goal: DOM paste → `App::apply_str`, matching native
+## web-paste — `crates/core/src/input.rs`, `crates/web/src/main.rs`, `src/main.rs`
+Status: done (2026-10-08). Goal: DOM paste → `App::apply_str`, matching native
 bracketed paste.
+
+**2026-10-08.**
+- **One paste path.** New core `input::paste(app, ui, text)` clears the status
+  and calls `App::apply_str`. Native `Event::Paste` and the web `paste` listener
+  both call it, as `key_to_msg` is shared for keys, so the "a paste is one edit,
+  not typing" rule (no `activate`, no fever, no flash, no grace) has one
+  definition. Test: `paste_is_one_edit_without_fever_or_effects`.
+- **Web:** a `document` `paste` listener reads `clipboardData.getData("text")`,
+  calls `preventDefault` and then `paste`. No permission prompt, unlike
+  `navigator.clipboard.readText()`.
+- **Spike Q6 (Cmd-V also arriving as a `v` keydown) can't double up:**
+  `on_key` already returns on Cmd and Ctrl chords, and that untouched browser
+  default is what fires `paste`.
+- **Verified:** a constructed `ClipboardEvent` with `(1+2)×3` showed the
+  expression, `=` gave `9`, and the default was prevented. Chrome DevTools'
+  synthetic `Meta+v` doesn't run the browser's paste command (no `paste` event
+  fires, with or without our listener), so a **real Cmd-V was checked by hand
+  in Chrome and Safari** (Safari included because it is the likeliest to
+  withhold `paste` from a page with no text field; it didn't).
