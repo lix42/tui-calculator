@@ -25,8 +25,8 @@ cargo run
 
 ### In the browser
 
-**Try it: <https://lix42.github.io/tui-calculator/>** (also on Cloudflare:
-<https://tui-calculator.i-70e.workers.dev>)
+**Try it: <https://calc.xuli.dev>** (also at <https://calc.lix42.com> and
+<https://lix42.github.io/tui-calculator/>)
 
 The same calculator runs in a browser tab, built with
 [Ratzilla](https://github.com/ratatui/ratzilla) and [Trunk](https://trunkrs.dev).

@@ -1416,6 +1416,17 @@ Status: done (2026-10-08). Goal: the same `dist/` on Cloudflare Workers Static A
   template) and `CLOUDFLARE_ACCOUNT_ID` (from `wrangler whoami`).
 - Gitignored `crates/web/.wrangler`. URL:
   <https://tui-calculator.i-70e.workers.dev>.
+- **Live after merge (#34):** `cloudflare` job green, 3 assets uploaded, the
+  workers.dev URL served 200 with no post-deploy 404 window, `78-65*5=` →
+  `-247`. Spike Worker `tui-calculator-spike` deleted (now 404).
+
+**2026-10-08, Custom Domains.** `calc.xuli.dev` and `calc.lix42.com` (both
+zones in the same Cloudflare account) as `routes` with `custom_domain: true` in
+`wrangler.jsonc`, not added in the dashboard, so the mapping lives in git.
+Cloudflare creates each DNS record and certificate on deploy. Adding one needs
+the CI token to hold *Zone → Workers Routes → Write* on both zones (the "Edit
+Cloudflare Workers" template has it if its zone resources cover them).
+workers.dev and GitHub Pages stay up as mirrors.
 
 ## web-paste — `crates/core/src/input.rs`, `crates/web/src/main.rs`, `src/main.rs`
 Status: done (2026-10-08). Goal: DOM paste → `App::apply_str`, matching native
