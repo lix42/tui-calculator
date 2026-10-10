@@ -14,7 +14,7 @@ use web_time::{Duration, Instant};
 
 use ratatui::layout::{Position, Rect};
 
-use crate::layout::{Dir, Keypad};
+use crate::layout::{Dir, HELP_H, Keypad};
 
 /// How long a button stays in its "pressed" look after activation. Terminals
 /// have no key-release event, so the press is shown as a brief flash that the
@@ -45,6 +45,12 @@ const RIPPLE_DURATION: Duration = Duration::from_millis(800);
 /// below the threshold where motion draws the eye — long enough that you notice
 /// it only when looking for it.
 const BREATH_PERIOD: Duration = Duration::from_millis(4200);
+
+/// How long each page of the shortcut help line stays up before the next one
+/// replaces it. A page *flip*, not a sliding ticker: a ticker would be the only
+/// thing moving on an otherwise still stage-1 screen, and would cut `key label`
+/// pairs in half at its edges.
+const HELP_PAGE_PERIOD: Duration = Duration::from_secs(4);
 
 /// How long one cycle of the stage-four fever meter's hue rotation takes.
 ///
@@ -398,6 +404,10 @@ pub struct UiState {
     // `main.rs` — it's an input-routing and rendering concern, so like `color_mode`
     // and `theme` it lives here rather than on `App`.
     quick_mode: bool,
+    // Whether the shortcut help line is drawn under the grid. On by default;
+    // the web entry turns it off on touch-first devices, where keyboard
+    // shortcuts are noise. Auto-selection reserves its row only while it's on.
+    show_help: bool,
 }
 
 impl Default for UiState {
@@ -436,7 +446,32 @@ impl UiState {
             fever_stage: FeverStage::One,
             fever_last_tick: now,
             reading_grace_until: None,
+            show_help: true,
         }
+    }
+
+    /// Show or hide the shortcut help line. Set once by the entry point before
+    /// the first frame (whose `auto_select` then reserves the row or not).
+    pub fn set_show_help(&mut self, on: bool) {
+        self.show_help = on;
+    }
+
+    /// Whether the shortcut help line is drawn.
+    pub fn show_help(&self) -> bool {
+        self.show_help
+    }
+
+    /// Whether the user has pinned a pad (Tab), i.e. whether `a` would do
+    /// anything. Read by the help line.
+    pub fn pinned(&self) -> bool {
+        self.override_layout.is_some()
+    }
+
+    /// Which help-line page is up: the count of [`HELP_PAGE_PERIOD`]s since
+    /// startup. The renderer takes it modulo however many pages the current
+    /// width needs, so the clock itself knows nothing about pages.
+    pub fn help_tick(&self) -> u64 {
+        (self.animation_start.elapsed().as_millis() / HELP_PAGE_PERIOD.as_millis()) as u64
     }
 
     /// Turn quick-input mode on or off. A setter rather than a toggle because the
@@ -611,6 +646,13 @@ impl UiState {
     /// at index 0): the scan keeps the incumbent unless a later pad *strictly*
     /// beats it.
     fn select_for(&self, w: u16, h: u16) -> usize {
+        // The help line sits under every pad alike, so it comes off the height
+        // the pads compete for rather than out of each pad's own score.
+        let h = if self.show_help {
+            h.saturating_sub(HELP_H)
+        } else {
+            h
+        };
         let mut best = 0;
         let mut best_score = self.layouts[0].fit_score(w, h);
         for i in 1..self.layouts.len() {

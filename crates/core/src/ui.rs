@@ -7,7 +7,7 @@ use ratatui::widgets::{Block, BorderType, Padding, Paragraph};
 
 use crate::action::quick_key;
 use crate::app::App;
-use crate::layout::{CELL_H, CELL_W, DISPLAY_H};
+use crate::layout::{CELL_H, CELL_W, DISPLAY_H, HELP_H};
 use crate::ui_state::{ColorMode, EffectKind, FeverStage, Theme, UiState};
 
 /// Everything the color functions need to build a color: which background the
@@ -170,13 +170,106 @@ fn rainbow_spans(s: &str, palette: Palette) -> Vec<Span<'_>> {
 pub fn draw(frame: &mut Frame, app: &App, ui: &mut UiState) {
     let grid_w = ui.keypad().cols() as u16 * CELL_W;
     let grid_h = ui.keypad().rows() as u16 * CELL_H;
-    let panel = centered_panel(frame.area(), grid_w, DISPLAY_H + grid_h);
-    let [display_area, button_area] =
-        Layout::vertical([Constraint::Length(DISPLAY_H), Constraint::Length(grid_h)]).areas(panel);
+    let help_h = if ui.show_help() { HELP_H } else { 0 };
+    let panel = centered_panel(frame.area(), grid_w, DISPLAY_H + grid_h + help_h);
+    let [display_area, button_area, help_area] = Layout::vertical([
+        Constraint::Length(DISPLAY_H),
+        Constraint::Length(grid_h),
+        Constraint::Length(help_h),
+    ])
+    .areas(panel);
 
     let palette = frame_palette(ui);
     draw_display(frame, app, ui, palette, display_area);
     draw_buttons(frame, ui, palette, button_area);
+    draw_help(frame, ui, help_area);
+}
+
+/// One shortcut on the help line: the key as the user types it, and a one-word
+/// gloss of what it does.
+type HelpItem = (&'static str, &'static str);
+
+/// Separator between items on a help-line page. Its width counts toward fitting.
+const HELP_SEP: &str = " · ";
+
+/// The shortcut help line under the grid: one page of [`help_pages`], flipped
+/// every `HELP_PAGE_PERIOD` by the free-running [`UiState::help_tick`]. Dim and
+/// color-free at every fever stage — it's reference text, not decoration.
+fn draw_help(frame: &mut Frame, ui: &UiState, area: Rect) {
+    if area.height == 0 {
+        return;
+    }
+    let pages = help_pages(&help_items(ui.quick_mode(), ui.pinned()), area.width);
+    if pages.is_empty() {
+        return;
+    }
+    let page = &pages[(ui.help_tick() % pages.len() as u64) as usize];
+    frame.render_widget(Line::from(page.as_str()).centered().dim(), area);
+}
+
+/// The shortcuts the help line advertises, **highest priority first**: when the
+/// panel is too narrow for all of them, the first ones land on the first page.
+///
+/// `quick_mode`: in quick-input mode the home-row letters type digits, and
+/// `Esc` is the only way back out — the one key you can't find by trying.
+/// `pinned`: whether a pad is pinned (Tab), i.e. whether `a` would do anything.
+///
+/// `y` is deliberately absent: the display's `[y Copy]` hint already appears
+/// exactly when copying is possible.
+fn help_items(quick_mode: bool, pinned: bool) -> Vec<HelpItem> {
+    let tab_item = if pinned && !quick_mode {
+        ("a", "Auto")
+    } else {
+        ("Tab", "Pad")
+    };
+    let quick_item = if quick_mode {
+        ("Esc", "Normal")
+    } else {
+        ("i", "Quick")
+    };
+    vec![
+        ("q", "Quit"),
+        quick_item,
+        ("Enter", "Calc"),
+        ("c", "Clear"),
+        ("t", "Theme"),
+        tab_item,
+    ]
+}
+
+/// Split `items` into pages that each fit in `width` columns, keeping the given
+/// order and never cutting an item in half. Items on a page are joined with
+/// [`HELP_SEP`]; an item is `"{key} {label}"`.
+///
+/// Edge cases the tests pin down: everything fitting gives exactly one page; an
+/// item wider than `width` on its own still gets a page (the renderer clips it)
+/// rather than being dropped; no items gives no pages.
+fn help_pages(items: &[HelpItem], width: u16) -> Vec<String> {
+    // Columns, not bytes: `·` is two bytes but one column.
+    let width = width as usize;
+    let sep_w = HELP_SEP.chars().count();
+    let mut pages = Vec::new();
+    let (mut page, mut page_w) = (String::new(), 0);
+    for (key, label) in items {
+        let item = format!("{key} {label}");
+        let item_w = item.chars().count();
+        // Close the page only if it has something on it: an item too wide for
+        // any page still gets one of its own instead of an endless empty page.
+        if !page.is_empty() && page_w + sep_w + item_w > width {
+            pages.push(std::mem::take(&mut page));
+            page_w = 0;
+        }
+        if !page.is_empty() {
+            page.push_str(HELP_SEP);
+            page_w += sep_w;
+        }
+        page.push_str(&item);
+        page_w += item_w;
+    }
+    if !page.is_empty() {
+        pages.push(page);
+    }
+    pages
 }
 
 /// The palette this frame is drawn with: the user's theme, with every hue rotated
@@ -987,11 +1080,12 @@ mod tests {
     use ratatui::style::Modifier;
     use std::collections::HashSet;
 
-    /// Render the whole UI onto a `28×29` test terminal — exactly the standard
-    /// pad's panel size (`4×7` cells wide, `5×5` cells plus the display tall), so
+    /// Render the whole UI onto a `28×30` test terminal — exactly the standard
+    /// pad's panel size (`4×7` cells wide, `5×5` cells plus the display and the
+    /// help line tall), so
     /// the panel fills the buffer and cell coordinates are predictable.
     fn render(ui: &mut UiState) -> ratatui::buffer::Buffer {
-        let mut terminal = Terminal::new(TestBackend::new(28, 29)).expect("test terminal");
+        let mut terminal = Terminal::new(TestBackend::new(28, 30)).expect("test terminal");
         let app = App::new();
         terminal
             .draw(|frame| draw(frame, &app, ui))
@@ -1014,11 +1108,12 @@ mod tests {
         assert_eq!(buf[(10, 16)].symbol(), "5");
 
         // With the mode off the border is plain again — no lowercase tip letters
-        // anywhere (every pad label is a digit, operator, or uppercase `C`).
+        // anywhere on the pad (every pad label is a digit, operator, or uppercase
+        // `C`). The help line, the last row, is prose and is excluded.
         ui.set_quick_mode(false);
         let plain = render(&mut ui);
         assert_eq!(plain[(8, 14)].symbol(), "─");
-        for y in 0..plain.area.height {
+        for y in 0..plain.area.height - HELP_H {
             for x in 0..plain.area.width {
                 let s = plain[(x, y)].symbol();
                 assert!(
@@ -1985,5 +2080,79 @@ mod tests {
             rainbow.spans[1].style.fg,
             glyph_color('+', Palette::new(Theme::Dark))
         );
+    }
+
+    const ITEMS: &[HelpItem] = &[("i", "quick"), ("Tab", "pad"), ("q", "quit")];
+
+    #[test]
+    fn help_pages_fit_everything_on_one_page_when_wide_enough() {
+        assert_eq!(help_pages(ITEMS, 40), vec!["i quick · Tab pad · q quit"]);
+    }
+
+    #[test]
+    fn help_pages_break_between_items_never_inside_one() {
+        // "i quick · Tab pad" is 17 columns; adding " · q quit" would make 26.
+        assert_eq!(help_pages(ITEMS, 20), vec!["i quick · Tab pad", "q quit"]);
+        // The fit is measured in columns, not bytes: `·` is 2 bytes, so a
+        // byte count would call this 18 wide and wrongly split it at 17.
+        assert_eq!(help_pages(ITEMS, 17), vec!["i quick · Tab pad", "q quit"]);
+    }
+
+    #[test]
+    fn help_pages_keep_an_item_too_wide_for_any_page() {
+        // Dropping it would silently hide a shortcut; the renderer clips instead.
+        assert_eq!(help_pages(ITEMS, 5), vec!["i quick", "Tab pad", "q quit"]);
+    }
+
+    #[test]
+    fn help_pages_of_nothing_is_no_pages() {
+        assert!(help_pages(&[], 28).is_empty());
+    }
+
+    #[test]
+    fn quick_mode_help_shows_the_way_out_on_the_first_page() {
+        // `Esc` is the only way out of quick-mode, so it can't wait for a page
+        // flip — even on the narrowest pad. Measured on the real pads rather than
+        // a hard-coded width, so a new narrower pad is covered automatically.
+        let narrowest = [Keypad::standard(), Keypad::tall(), Keypad::wide()]
+            .iter()
+            .map(|k| k.cols() as u16 * CELL_W)
+            .min()
+            .unwrap();
+        for pinned in [false, true] {
+            let pages = help_pages(&help_items(true, pinned), narrowest);
+            assert!(pages[0].contains("Esc"), "first page: {:?}", pages[0]);
+        }
+    }
+
+    #[test]
+    fn help_never_advertises_copy() {
+        // The display's `[y Copy]` hint already covers it, exactly when it works.
+        for (quick, pinned) in [(false, false), (false, true), (true, false), (true, true)] {
+            assert!(help_items(quick, pinned).iter().all(|(key, _)| *key != "y"));
+        }
+    }
+
+    /// The text of buffer row `y`, trimmed.
+    fn row_text(buf: &ratatui::buffer::Buffer, y: u16) -> String {
+        (0..buf.area.width)
+            .map(|x| buf[(x, y)].symbol())
+            .collect::<String>()
+            .trim()
+            .to_string()
+    }
+
+    #[test]
+    fn help_line_renders_under_the_grid_only_when_enabled() {
+        let mut ui = UiState::new();
+        let buf = render(&mut ui);
+        // Row 29 is the one under the grid's bottom border (rows 4..29).
+        assert!(!row_text(&buf, 29).is_empty(), "help line should show");
+
+        ui.set_show_help(false);
+        let buf = render(&mut ui);
+        // Without the row the 29-tall panel centers in 30 rows and leaves one
+        // blank; neither edge row carries help text.
+        assert!(!row_text(&buf, 29).contains('·') && !row_text(&buf, 0).contains('·'));
     }
 }
