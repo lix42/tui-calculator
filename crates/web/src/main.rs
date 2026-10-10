@@ -52,6 +52,8 @@ fn main() -> std::io::Result<()> {
         frame_size: (0, 0),
         painted_theme: None,
     }));
+    // Before the first frame, whose `auto_select` reserves the help row or not.
+    state.borrow_mut().ui.set_show_help(!touch_first());
     let terminal = Terminal::new(GridBackend::new().map_err(std::io::Error::other)?)?;
     // Capture phase, so keys arrive whatever has focus; there's no `tabindex`
     // to keep alive across the grid being replaced.
@@ -384,6 +386,19 @@ fn paint_body(theme: Theme) {
             .style()
             .set_property("background-color", &format!("rgb({r}, {g}, {b})"));
     }
+}
+
+/// Whether touch is the device's primary input (a phone, an iPad without a
+/// trackpad), where the keyboard-shortcut help line is noise. Asks the CSS media
+/// query rather than sniffing the user agent: it describes the *input*, which is
+/// what the line is about. Read once at startup; a query the browser can't
+/// answer counts as "not touch-first", so the line shows.
+fn touch_first() -> bool {
+    window()
+        .match_media("(hover: none) and (pointer: coarse)")
+        .ok()
+        .flatten()
+        .is_some_and(|mq| mq.matches())
 }
 
 fn window() -> web_sys::Window {

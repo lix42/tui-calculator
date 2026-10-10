@@ -12,6 +12,10 @@ use std::collections::HashMap;
 pub const CELL_W: u16 = 7;
 pub const CELL_H: u16 = 5;
 pub const DISPLAY_H: u16 = 4;
+/// Height of the shortcut help line under the grid, when it's shown. Not part of
+/// a pad's own [`Keypad::fit_score`]: whether the line is shown is a per-host
+/// setting (hidden on touch-first browsers), so `UiState` reserves it.
+pub const HELP_H: u16 = 1;
 
 /// A single step across the lattice: one cell, along one axis.
 ///

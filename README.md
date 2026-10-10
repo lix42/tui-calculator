@@ -13,6 +13,9 @@ A terminal-based calculator built with Rust and [Ratatui](https://ratatui.rs).
 - **Fever mode**: typing drives a visual ladder — plain → colored highlights →
   animation → full rainbow, with the meter living in the display's bottom border
 - **Quick input**: a home-row numpad mode for typing without leaving the home row
+- **Shortcut help line** under the keypad, paging through the command keys when
+  the keypad is too narrow to show them all at once (hidden on touch-first
+  browsers, where there's no keyboard to press them on)
 - **Copy result to clipboard**: after evaluating, a `[y Copy]` hint appears in the
   display. Press `y` or click it to copy the result. It disappears when new input
   begins.
@@ -76,6 +79,10 @@ otherwise inert, so that double-tapping it can never discard an expression.
 Three keypads ship — a 5×4 standard pad, a tall-narrow one, and a wide-short one.
 Resizing the terminal picks whichever best fits its shape, unless `Tab` has pinned
 one.
+
+A dim line under the keypad lists these shortcuts, most useful first. When they
+don't all fit the keypad's width it flips to the next set every few seconds. In
+quick input it lists that mode's keys instead, starting with `Esc`, the way out.
 
 ### Fever mode
 
