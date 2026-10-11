@@ -1515,3 +1515,30 @@ Status: done (2026-10-08). Goal: the calculator works on iOS Safari.
   survive repeated same-size `resize` events. Lix confirmed on a real iPhone.
 - **Not fixed (pre-existing):** a window too short for every pad (e.g. 28 rows,
   an iPhone in landscape) squashes a button row and clips its labels.
+
+## web-ratzilla-fork — `Cargo.toml`, `crates/web/src/main.rs`
+Status: done (2026-10-10). Goal: fix web-touch's two Ratzilla bugs upstream and
+drop our workarounds.
+
+- **Upstream:** issue ratatui/ratzilla#188 + PR #189 (`size()` returns the grid
+  it builds: the `resize` listener measures, `size()` reports the pending size,
+  `draw` rebuilds), issue #190 + PR #191 (keep the grid on a resize that keeps
+  its size; re-attach it and update row heights). Each has browser tests that
+  fail on the code before it. #191 builds on #189 (from a fork, so no
+  `gh stack`: a stacked PR's base must be a branch in the upstream repo).
+- **Here:** `[patch.crates-io]` points `ratzilla` at `lix42/ratzilla`, tag
+  `calc-pin-1` (`fd9f7b2`, both fixes). A tag, not the PR branch: the branch
+  gets rebased once #189 merges, leaving the pinned commit on no branch.
+  `crates/web` still asks for `ratzilla = "0.3.1"`, so going back to crates.io
+  is deleting the patch.
+- **Deleted:** `grid_backend.rs` (`GridBackend`) and `run_frames`; the loop is
+  `draw_web` again. A failed draw now panics (to the console via our hook)
+  instead of being logged, the one thing `run_frames` did besides the clear.
+- **New edge:** the fixed Ratzilla detaches `#grid` in its `resize` listener, so
+  a press between a resize and the next frame finds no grid and is dropped.
+- **Verified:** workspace tests, clippy (native + wasm), the release `trunk
+  build`; Chrome with the iPhone setup from web-touch: no panic, labels survive
+  same-size `resize` events, taps press keys.
+- **Still worked around:** `Color::Reset` as white (`resolve_default_colors`)
+  and Ratzilla's key/mouse callbacks dying on a size-changing resize (our
+  `document` listeners). Not yet reported upstream.

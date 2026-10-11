@@ -1,15 +1,14 @@
 //! The calculator in the browser: Ratzilla's `DomBackend` + the shared core.
 //!
 //! Like `src/main.rs`, this owns only what is platform-specific: translating DOM
-//! events into the core's [`Key`], the clipboard, and the frame loop. What each
-//! key *means* is [`key_to_msg`], shared with the native build.
+//! events into the core's [`Key`], the clipboard, and the frame callback. What
+//! each key *means* is [`key_to_msg`], shared with the native build.
 //!
 //! Input does **not** go through Ratzilla's `on_key_event` / `on_mouse_event`.
-//! Those attach to DomBackend's grid element, which is replaced on every window
-//! resize, so both go dead after the first one (see `web-spike` in
-//! `docs/progress.md`). Our listeners live on `document`, which never changes.
-
-mod grid_backend;
+//! Those attach to DomBackend's grid element, which is replaced on every resize
+//! that changes the grid size, so both go dead after the first one (see
+//! `web-spike` in `docs/progress.md`). Our listeners live on `document`, which
+//! never changes.
 
 use std::{cell::RefCell, rc::Rc};
 
@@ -18,10 +17,10 @@ use calculator_core::app::App;
 use calculator_core::input::{Key, KeyCode, Msg, activate, apply_msg, key_to_msg, paste};
 use calculator_core::ui;
 use calculator_core::ui_state::{Theme, UiState};
-use grid_backend::GridBackend;
+use ratzilla::ratatui::Terminal;
 use ratzilla::ratatui::buffer::Buffer;
 use ratzilla::ratatui::style::Color;
-use ratzilla::ratatui::{Frame, Terminal};
+use ratzilla::{DomBackend, WebRenderer};
 use web_sys::wasm_bindgen::convert::FromWasmAbi;
 use web_sys::wasm_bindgen::{JsCast, JsValue, closure::Closure};
 use web_sys::{AddEventListenerOptions, ClipboardEvent, DomException, KeyboardEvent, PointerEvent};
@@ -54,7 +53,7 @@ fn main() -> std::io::Result<()> {
     }));
     // Before the first frame, whose `auto_select` reserves the help row or not.
     state.borrow_mut().ui.set_show_help(!touch_first());
-    let terminal = Terminal::new(GridBackend::new().map_err(std::io::Error::other)?)?;
+    let terminal = Terminal::new(DomBackend::new().map_err(std::io::Error::other)?)?;
     // Capture phase, so keys arrive whatever has focus; there's no `tabindex`
     // to keep alive across the grid being replaced.
     listen("keydown", true, {
@@ -76,7 +75,7 @@ fn main() -> std::io::Result<()> {
         let state = state.clone();
         move |e: ClipboardEvent| on_paste(&state, &e)
     });
-    run_frames(terminal, move |frame| {
+    terminal.draw_web(move |frame| {
         let web = &mut *state.borrow_mut();
         let area = frame.area();
         if (area.width, area.height) != web.frame_size {
@@ -93,44 +92,6 @@ fn main() -> std::io::Result<()> {
         resolve_default_colors(frame.buffer_mut(), theme);
     });
     Ok(())
-}
-
-/// The frame callback, filled in once it exists to refer to itself.
-type FrameSlot = Rc<RefCell<Option<Closure<dyn FnMut()>>>>;
-
-/// Draw with `render` on every animation frame, for the page's lifetime.
-///
-/// Ratzilla's `draw_web`, with two changes. After a `resize` the backend's
-/// grid is blank (see `grid_backend.rs`), so `Terminal::clear` resets
-/// ratatui's back buffer first and the draw sends every cell (strictly, every
-/// cell that isn't `Cell::default()`, which is what the rebuilt grid already
-/// holds; in practice `resolve_default_colors` leaves none). And a failed
-/// draw is logged, ending the loop, instead of `draw_web`'s `unwrap` panic.
-fn run_frames(mut terminal: Terminal<GridBackend>, mut render: impl FnMut(&mut Frame) + 'static) {
-    // The closure re-requests itself, so it holds a handle to its own slot.
-    // The cycle is the point: it keeps the loop alive.
-    let slot: FrameSlot = Rc::new(RefCell::new(None));
-    let next = slot.clone();
-    *slot.borrow_mut() = Some(Closure::new(move || {
-        let mut frame = || {
-            if terminal.backend().take_resized() {
-                terminal.clear()?;
-            }
-            terminal.draw(&mut render).map(drop)
-        };
-        if let Err(err) = frame() {
-            web_sys::console::error_1(&format!("draw failed, stopping: {err}").into());
-            return;
-        }
-        request_frame(next.borrow().as_ref().expect("set before the first frame"));
-    }));
-    request_frame(slot.borrow().as_ref().expect("just set"));
-}
-
-fn request_frame(callback: &Closure<dyn FnMut()>) {
-    window()
-        .request_animation_frame(callback.as_ref().unchecked_ref())
-        .expect("requestAnimationFrame");
 }
 
 /// Attach a `document` listener for the app's lifetime.
@@ -260,11 +221,11 @@ fn copies_on(pointer_type: &str, down: bool) -> bool {
 
 /// The grid cell under a client point, or `None` outside the grid.
 fn grid_cell(x: i32, y: i32) -> Option<(u16, u16)> {
-    // Look the grid up on every press: a resize replaces the element.
+    // Look the grid up on every press: any resize detaches it until the next
+    // frame (a press then is dropped), and one that changes the size replaces
+    // it.
     let grid = document().get_element_by_id("grid")?;
     // Count the cells in the DOM rather than trusting the frame size.
-    // `GridBackend` makes the two agree, but between a resize and the next
-    // frame they are briefly different grids anyway.
     let rows = grid.child_element_count();
     let cols = grid
         .first_element_child()
