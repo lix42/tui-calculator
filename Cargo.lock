@@ -1577,8 +1577,7 @@ dependencies = [
 [[package]]
 name = "ratzilla"
 version = "0.3.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d53309a50b2cfb9828d1ea653b77fc6d2fe08137b05e65aa070ab87630e35b49"
+source = "git+https://github.com/lix42/ratzilla?tag=calc-pin-1#fd9f7b2e5319e28000c2785ff085f318c9ffcaa1"
 dependencies = [
  "beamterm-renderer",
  "bitvec",

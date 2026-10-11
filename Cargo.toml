@@ -28,6 +28,13 @@ arboard = { version = "3", features = ["wayland-data-control"] }
 [dev-dependencies]
 calculator-core = { path = "crates/core", features = ["test-support"] }
 
+# Ratzilla 0.3.1 plus our two DomBackend fixes, until a release has them:
+# ratatui/ratzilla#189 (size() larger than the grid panicked on phones) and #191
+# (a resize that kept the size left the grid blank). A tag, not the PR branch,
+# because that branch gets rebased. Delete this to go back to crates.io.
+[patch.crates-io]
+ratzilla = { git = "https://github.com/lix42/ratzilla", tag = "calc-pin-1" }
+
 # The browser build's profile (`trunk build --release --cargo-profile
 # wasm-release`, see crates/web). Size beats speed for a page download, and the
 # native release build keeps the default `release` profile untouched.
